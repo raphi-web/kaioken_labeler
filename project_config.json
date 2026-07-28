@@ -1,0 +1,98 @@
+{
+  "project_name": "eonavi",
+  "data_profile": {
+    "input_channels": 10,
+    "input_patch_size": [
+      96,
+      96
+    ],
+    "band_names": [
+      "Red",
+      "Green",
+      "Blue",
+      "NIR1",
+      "RE1",
+      "RE2",
+      "RE3",
+      "NIR2",
+      "SWIR1",
+      "SWIR2"
+    ],
+    "display_bands": [
+      0,
+      1,
+      2
+    ],
+    "use_pointrend": false
+  },
+  "classes": [
+    {
+      "id": 0,
+      "name": "Urban",
+      "color": "#e05a4f"
+    },
+    {
+      "id": 1,
+      "name": "Road",
+      "color": "#4a4a55"
+    },
+    {
+      "id": 2,
+      "name": "Agriculture-Green",
+      "color": "#3ddc6b"
+    },
+    {
+      "id": 3,
+      "name": "Raw-Earth/Agriculture",
+      "color": "#c98f3c"
+    },
+    {
+      "id": 4,
+      "name": "Meadow",
+      "color": "#d4e34a"
+    },
+    {
+      "id": 5,
+      "name": "Forest",
+      "color": "#14562b"
+    },
+    {
+      "id": 6,
+      "name": "Shrub",
+      "color": "#9ac48d"
+    },
+    {
+      "id": 7,
+      "name": "Water",
+      "color": "#2f7ce0"
+    },
+    {
+      "id": 8,
+      "name": "Snow",
+      "color": "#eef2f7"
+    },
+    {
+      "id": 9,
+      "name": "Wetland",
+      "color": "#9b5fd0"
+    },
+    {
+      "id": 10,
+      "name": "Synthetic Nodata",
+      "color": "#ff2fd0"
+    }
+  ],
+  "split": {
+    "validation_ratio": 0.2,
+    "overrides": {}
+  },
+  "paths": {
+    "images_folder": "input_images",
+    "masks_user": "label_raster",
+    "masks_ai": "masks_ai"
+  },
+  "mask_format": {
+    "dtype": "int32",
+    "nodata": -9999
+  }
+}

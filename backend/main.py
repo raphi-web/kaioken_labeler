@@ -1,0 +1,66 @@
+"""Entry point: opens the pywebview window with the built React frontend.
+
+Usage: python backend/main.py [path/to/image.tiff | path/to/project_dir]
+"""
+
+import os
+import sys
+
+if sys.platform.startswith("linux"):
+    _bundled_qt_themes = {"gtk3", "xdgdesktopportal"}
+    _requested = os.environ.get("QT_QPA_PLATFORMTHEME", "")
+    if not set(_requested.split(":")) & _bundled_qt_themes:
+        os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal:gtk3"
+
+import webview
+
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT = sys._MEIPASS
+else:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+from api import Api
+
+FRONTEND = os.path.join(PROJECT_ROOT, "frontend", "dist", "index.html")
+DEFAULT_IMAGE = os.path.join(PROJECT_ROOT, "00.tiff")
+# This fork ships a project_config.json at the repo root describing the fixed
+# 11-class dataset (input_images/ + label_raster/), so launching with no
+# argument opens that project instead of the single demo image.
+DEFAULT_PROJECT = PROJECT_ROOT
+
+
+def _default_target():
+    """(project_root, image_path) for a no-argument launch; at most one is set."""
+    if os.path.exists(os.path.join(DEFAULT_PROJECT, "project_config.json")):
+        return DEFAULT_PROJECT, None
+    return None, DEFAULT_IMAGE if os.path.exists(DEFAULT_IMAGE) else None
+
+
+def main():
+    if not os.path.exists(FRONTEND):
+        sys.exit("Frontend not built. Run: cd frontend && npm install && npm run build")
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    if arg is None:
+        project_root, image_path = _default_target()
+        if project_root:
+            arg = project_root
+    if arg and os.path.isdir(arg):
+        api = Api(project_root=arg)
+        title_suffix = os.path.basename(os.path.normpath(arg))
+    else:
+        image_path = arg or _default_target()[1]
+        api = Api(image_path=image_path)
+        title_suffix = os.path.basename(image_path) if image_path else "no image"
+    webview.create_window(
+        f"Sentinel-2 Interactive Segmentation — {title_suffix}",
+        FRONTEND,
+        js_api=api,
+        width=1500,
+        height=950,
+    )
+    webview.start()
+
+
+if __name__ == "__main__":
+    main()

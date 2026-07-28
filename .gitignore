@@ -1,0 +1,12 @@
+/.claude
+/.idea 
+/.masks_ai 
+/input_images
+/label_raster
+00.tiff
+/sam2
+/frontend/node_modules
+/frontend/dist
+/docs
+/backend/testdata/
+/.thumbnails/

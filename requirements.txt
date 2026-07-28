@@ -1,0 +1,25 @@
+# Labeling-only build: no PyTorch, no training, no inference.
+#
+# torch, torchvision, segmentation-models-pytorch, timm and albumentations are
+# all gone. SAM2 still runs, on onnxruntime — see sam_service.py.
+
+# Arrays / geospatial I/O
+numpy>=1.26,<2
+rasterio>=1.4,<1.5
+
+# Desktop bridge / imaging
+pywebview>=6
+pillow>=10
+
+# SAM2 "snap-to-edge" click assist. The encoder/decoder are prebuilt ONNX
+# graphs in sam2/onnx/; scipy does the bilinear resizes around them (the job
+# torchvision and torch.nn.functional.interpolate used to do) and opencv turns
+# the resulting mask into editable polygons.
+onnxruntime>=1.20
+scipy>=1.10
+opencv-python-headless>=4.8
+
+# Packaging only (./build_app.sh); not imported by the app:  pyinstaller
+
+# Linux renderer note: pywebview uses GTK/WebKit2 (PyGObject + gir1.2-webkit2-4.1)
+# if available; otherwise install the Qt extra:  pip install pywebview[qt]
