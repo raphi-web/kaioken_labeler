@@ -1,5 +1,12 @@
-import { useMemo } from 'react'
+
+import { useMemo, useRef, useState } from 'react'
 import { ERASER_KEY, UNLABELED, classKeyLabel } from '../constants'
+
+// Drag-to-resize bounds. The floor keeps the key/swatch/count columns readable;
+// the ceiling stops the palette from eating the labeling pane.
+const MIN_WIDTH = 120
+const MAX_WIDTH = 420
+const DEFAULT_WIDTH = 168
 
 // Painted-pixel count per class, so a class that is present but scarce (or that
 // you meant to paint and haven't) is visible without generating a report. One
@@ -21,9 +28,35 @@ function useClassCounts(labels, labelsVersion) {
 
 export default function ClassPalette({ classes, tool, setTool, labels, labelsVersion }) {
   const counts = useClassCounts(labels, labelsVersion)
+  const [width, setWidth] = useState(DEFAULT_WIDTH)
+  const [dragging, setDragging] = useState(false)
+  // Start point of the drag, so the width follows the cursor exactly instead of
+  // jumping by the offset between the pointer and the border it grabbed.
+  const dragRef = useRef(null)
+
+  function handleResizeDown(e) {
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = { x: e.clientX, width }
+    setDragging(true)
+  }
+
+  function handleResizeMove(e) {
+    const start = dragRef.current
+    if (!start) return
+    const next = start.width + (e.clientX - start.x)
+    setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, next)))
+  }
+
+  function handleResizeUp(e) {
+    if (!dragRef.current) return
+    dragRef.current = null
+    setDragging(false)
+    e.currentTarget.releasePointerCapture(e.pointerId)
+  }
 
   return (
-    <div className="class-palette">
+    <div className="class-palette" style={{ width }}>
       <div className="class-palette-title">Class</div>
       <div className="class-palette-list">
         {classes.map((c, i) => {
@@ -55,6 +88,15 @@ export default function ClassPalette({ classes, tool, setTool, labels, labelsVer
           <span className="class-name">Eraser</span>
         </button>
       </div>
+      <div
+        className={`class-palette-resizer${dragging ? ' dragging' : ''}`}
+        onPointerDown={handleResizeDown}
+        onPointerMove={handleResizeMove}
+        onPointerUp={handleResizeUp}
+        onPointerCancel={handleResizeUp}
+        onDoubleClick={() => setWidth(DEFAULT_WIDTH)}
+        title="Drag to resize — double-click to reset"
+      />
     </div>
   )
 }
