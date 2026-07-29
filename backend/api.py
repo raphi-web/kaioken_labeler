@@ -785,13 +785,6 @@ class Api:
 
     # ---------- thumbnails ----------
 
-    def generate_thumbnails(self):
-        """(Re)start async generation of missing 128px thumbnails in .thumbnails/."""
-        if self._project is None:
-            return {"ok": False, "error": "No project open"}
-        self._project.start_thumbnail_generation()
-        return {"ok": True}
-
     def get_thumbnails(self):
         """Thumbnail PNGs (base64, None while pending) plus generation progress."""
         if self._project is None:

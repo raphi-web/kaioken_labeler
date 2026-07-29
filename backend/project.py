@@ -57,7 +57,6 @@ CLASS_PRESETS = {
     ],
 }
 DEFAULT_PRESET = "sentinel2"
-DEFAULT_CLASSES = CLASS_PRESETS[DEFAULT_PRESET]
 
 
 def preset_classes(name=None):
@@ -104,6 +103,7 @@ def classes_from_settings(raw, existing=None, next_id=None):
         classes.append({"id": cid, "name": name,
                         "color": str(row.get("color", "")).strip()})
     return classes, counter
+
 
 # Band names of the original 10-band Sentinel-2 stacks, used as the default
 # naming when a project has exactly 10 bands.

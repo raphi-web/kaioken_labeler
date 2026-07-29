@@ -10,3 +10,5 @@
 /docs
 /backend/testdata/
 /.thumbnails/
+.code-graph.json
+__pycache__/

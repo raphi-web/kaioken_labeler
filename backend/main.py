@@ -24,9 +24,10 @@ from api import Api
 
 FRONTEND = os.path.join(PROJECT_ROOT, "frontend", "dist", "index.html")
 DEFAULT_IMAGE = os.path.join(PROJECT_ROOT, "00.tiff")
-# This fork ships a project_config.json at the repo root describing the fixed
-# 11-class dataset (input_images/ + label_raster/), so launching with no
-# argument opens that project instead of the single demo image.
+# This fork ships a project_config.json at the repo root (input_images/ +
+# label_raster/, an 11-class land-cover palette), so launching with no argument
+# opens that project instead of the single demo image. The palette itself is
+# whatever that config says -- see project.CLASS_PRESETS.
 DEFAULT_PROJECT = PROJECT_ROOT
 
 
@@ -35,6 +36,7 @@ def _default_target():
     if os.path.exists(os.path.join(DEFAULT_PROJECT, "project_config.json")):
         return DEFAULT_PROJECT, None
     return None, DEFAULT_IMAGE if os.path.exists(DEFAULT_IMAGE) else None
+
 
 
 def main():
