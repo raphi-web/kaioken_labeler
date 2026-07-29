@@ -15,7 +15,7 @@ outside ONNX; the encoder and decoder network passes are pure ONNX.
 Those two steps used torchvision and `torch.nn.functional.interpolate`, which
 were the last reason this labeling-only build would have needed PyTorch at all
 -- for a resize and a normalize. They are numpy and `scipy.ndimage.zoom` now,
-so nothing here imports torch. See `_resize_bilinear` for why `grid_mode=True`
+so nothing here imports torch. See `resize_bilinear` for why `grid_mode=True`
 is the load-bearing argument.
 
 The graphs in `sam2/onnx/` are checked in and are the only copy: this build has
@@ -50,8 +50,18 @@ _MODELS = {"tiny": "sam2.1_hiera_tiny", "small": "sam2.1_hiera_small"}
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
 
+# The encoder's three outputs, named by how much detail they keep rather than by
+# their position in the graph. The decoder consumes all three; the embedding
+# wand (see Api._embedding_field) matches on one of them at a time, which is
+# what these names are for.
+#
+#   fine  high_res_feat0   32 ch at 256x256  -- sharpest, most texture-like
+#   mid   high_res_feat1   64 ch at 128x128
+#   deep  image_embed     256 ch at  64x64   -- most semantic, coarsest grid
+FEATURE_LEVELS = {"fine": 1, "mid": 2, "deep": 0}
 
-def _resize_bilinear(arr, out_hw):
+
+def resize_bilinear(arr, out_hw):
     """Bilinear resize over the trailing two axes of a float array.
 
     Stands in for torchvision's Resize and for
@@ -149,7 +159,7 @@ class SamService:
         before normalizing, as SAM2 does.
         """
         chw = rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
-        resized = _resize_bilinear(chw, (self._res, self._res))
+        resized = resize_bilinear(chw, (self._res, self._res))
         return ((resized - _MEAN) / _STD)[np.newaxis]
 
     def set_image(self, rgb, key):
@@ -169,6 +179,21 @@ class SamService:
             self._feats = (image_embed, hrf0, hrf1)
             self._orig_hw = (int(rgb.shape[0]), int(rgb.shape[1]))
             self._image_key = key
+
+    def feature_stack(self, level="fine"):
+        """One cached encoder feature map as (C, h, w) float32.
+
+        The same embeddings the decoder segments from, handed out raw so a
+        caller can measure distances in feature space instead of asking for a
+        mask. set_image() must have been called first; the batch axis is
+        dropped since there is only ever one image in it.
+        """
+        if level not in FEATURE_LEVELS:
+            raise ValueError(f"unknown feature level: {level}")
+        with self._lock:
+            if self._feats is None or self._image_key is None:
+                raise RuntimeError("SAM2 image embeddings are not set")
+            return self._feats[FEATURE_LEVELS[level]][0]
 
     def predict_points(self, points):
         """Object mask (bool H×W) for a list of clicks.
@@ -230,7 +255,7 @@ class SamService:
                 score = float(iou[0, token])
             # Upscale the final low-res logits to the original size and threshold
             # at 0, exactly like SAM2's postprocess_masks (hole/sprinkle areas 0).
-            up = _resize_bilinear(prev[0, 0], (height, width))
+            up = resize_bilinear(prev[0, 0], (height, width))
             return up > 0.0, score
 
 

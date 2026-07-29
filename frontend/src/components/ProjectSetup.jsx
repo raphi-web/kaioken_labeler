@@ -1,7 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../bridge'
+import { classKeyLabel } from '../constants'
 
 const RGB_CHANNELS = [{ key: 'r', label: 'R' }, { key: 'g', label: 'G' }, { key: 'b', label: 'B' }]
+
+// Colours handed to classes added by hand, in order. Only a starting point --
+// every row has a colour picker -- but a new class arriving in a colour that
+// is already on screen is worse than useless, so these avoid the presets.
+const NEW_CLASS_COLORS = ['#f2c94c', '#56ccf2', '#bb6bd9', '#eb5757', '#6fcf97',
+                          '#f2994a', '#2d9cdb', '#828282']
+
+function nextClassColor(classes) {
+  const used = new Set(classes.map((c) => (c.color || '').toLowerCase()))
+  return NEW_CLASS_COLORS.find((c) => !used.has(c)) ?? '#888888'
+}
 
 // A valid [R, G, B] band-index triple: default to the first three bands, and
 // clamp every entry into the available band range.
@@ -31,9 +43,47 @@ export default function ProjectSetup({ mode = 'create', root, source, defaults, 
   const [form, setForm] = useState(() => ({
     ...defaults,
     display_bands: normalizeDisplayBands(defaults.display_bands, defaults.input_channels),
+    classes: (defaults.classes ?? []).map((c) => ({ ...c })),
   }))
   const editing = mode === 'edit'
   const tiling = mode === 'geotiff'
+
+  // Class ids the open project already has. A row that keeps its id keeps its
+  // painted pixels; a row that disappears from the list is a deletion, and the
+  // masks storing that id have to be dealt with before it can be saved.
+  const originalIds = useMemo(
+    () => (defaults.classes ?? []).map((c) => c.id).filter((id) => id !== undefined),
+    [defaults.classes])
+  const removedIds = originalIds.filter(
+    (id) => !form.classes.some((c) => c.id === id))
+  const removedKey = removedIds.join(',')
+  const [usage, setUsage] = useState(null)
+  const [confirmRemoval, setConfirmRemoval] = useState(false)
+
+  // What deleting these classes would actually cost, counted from the saved
+  // masks and this session's unsaved edits. Fetched when the set of removed
+  // rows changes -- one scan of the project, so not on every keystroke.
+  useEffect(() => {
+    if (!editing || !removedKey) {
+      setUsage(null)
+      return undefined
+    }
+    let cancelled = false
+    api('class_usage', removedKey.split(',').map(Number)).then((res) => {
+      if (!cancelled && res?.ok) setUsage(res.usage)
+    })
+    return () => { cancelled = true }
+  }, [editing, removedKey])
+
+  // Only a deletion that destroys labels needs confirming; dropping a class
+  // nobody ever painted is just an edit.
+  const clearing = removedIds
+    .map((id) => ({ id, ...(usage?.[String(id)] ?? { pixels: 0, images: 0 }) }))
+    .filter((u) => u.pixels > 0)
+  const removedNames = Object.fromEntries(
+    (defaults.classes ?? []).map((c) => [c.id, c.name]))
+  const needsConfirm = clearing.length > 0
+  const totalCleared = clearing.reduce((sum, u) => sum + u.pixels, 0)
   // Tile validity: the overlap must leave a forward step. There is no minimum
   // tile size here — the full app needs tiles at least as large as the model's
   // patch, but any tile you can see is a tile you can label.
@@ -90,11 +140,39 @@ export default function ProjectSetup({ mode = 'create', root, source, defaults, 
     })
   }
 
-  function setClassColor(id, color) {
+  // Rows are edited by position, not by id: a class added in this dialog has
+  // no id yet (the backend assigns one on save, from a counter that never
+  // reuses), so index is the only handle that exists for every row.
+  function setClassField(index, key, value) {
     setForm((f) => ({
       ...f,
-      classes: f.classes.map((c) => (c.id === id ? { ...c, color } : c)),
+      classes: f.classes.map((c, i) => (i === index ? { ...c, [key]: value } : c)),
     }))
+  }
+
+  function addClass() {
+    setForm((f) => ({
+      ...f,
+      classes: [...f.classes,
+                { name: `Class ${f.classes.length + 1}`,
+                  color: nextClassColor(f.classes) }],
+    }))
+  }
+
+  function removeClass(index) {
+    setForm((f) => ({ ...f, classes: f.classes.filter((_, i) => i !== index) }))
+    setConfirmRemoval(false) // a changed removal set has not been confirmed
+  }
+
+  // Presets are a starting point for a new project, not a mode: the list stays
+  // editable afterwards. Not offered when editing -- swapping the palette of a
+  // project that already has masks is a deletion of everything in it, which
+  // should look like the row-by-row deletion it is.
+  function applyPreset(name) {
+    const preset = defaults.class_presets?.[name]
+    if (!preset) return
+    setForm((f) => ({ ...f, class_preset: name,
+                      classes: preset.map((c) => ({ ...c })) }))
   }
 
   // Re-probe the band count when the images folder changes (create only: in
@@ -261,23 +339,89 @@ export default function ProjectSetup({ mode = 'create', root, source, defaults, 
           </div>
         </div>
 
-        {editing && form.classes && (
-          <div className="form-row">
-            <label>Class colors</label>
-            <div className="class-colors">
-              {form.classes.map((c) => (
-                <div key={c.id} className="class-color">
-                  <input
-                    type="color"
-                    value={c.color}
-                    onChange={(e) => setClassColor(c.id, e.target.value)}
-                  />
-                  <span>{c.name}</span>
-                </div>
-              ))}
-            </div>
+        <div className="form-row align-top">
+          <label title="The label space: one id per class, stored in every mask">
+            Classes
+          </label>
+          <div className="class-editor">
+            {!editing && defaults.class_presets && (
+              <div className="class-preset">
+                start from
+                <select
+                  value={form.class_preset ?? ''}
+                  onChange={(e) => applyPreset(e.target.value)}
+                >
+                  {Object.keys(defaults.class_presets).map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+                <span className="hint">then edit the list below</span>
+              </div>
+            )}
+            {form.classes.map((c, i) => (
+              <div key={c.id ?? `new-${i}`} className="class-row">
+                {/* The shortcut key, so it is visible that the list has grown
+                    past the ten-and-one keys CLASS_KEYS provides and the rest
+                    are click-only. */}
+                <span className="class-row-key">{classKeyLabel(i) || '·'}</span>
+                <input
+                  type="color"
+                  value={c.color || '#888888'}
+                  onChange={(e) => setClassField(i, 'color', e.target.value)}
+                />
+                <input
+                  type="text"
+                  value={c.name}
+                  placeholder="Class name"
+                  onChange={(e) => setClassField(i, 'name', e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="class-row-remove"
+                  disabled={form.classes.length < 2}
+                  title={form.classes.length < 2
+                    ? 'A project needs at least one class'
+                    : `Remove ${c.name}`}
+                  onClick={() => removeClass(i)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button type="button" className="class-add" onClick={addClass}>
+              + Add class
+            </button>
+            {editing && removedIds.length > 0 && (
+              <div className={needsConfirm ? 'modal-error' : 'hint'}>
+                {usage === null
+                  ? 'checking what those classes have labeled…'
+                  : needsConfirm
+                    ? (
+                      <>
+                        <div>
+                          Removing {clearing.map((u) => (
+                            `${removedNames[u.id] ?? `class ${u.id}`} `
+                            + `(${u.pixels.toLocaleString()} px in ${u.images} `
+                            + `image${u.images === 1 ? '' : 's'})`)).join(', ')}
+                          {' '}unlabels {totalCleared.toLocaleString()} px in the
+                          saved masks. This cannot be undone. AI masks are left
+                          alone.
+                        </div>
+                        <label className="class-confirm">
+                          <input
+                            type="checkbox"
+                            checked={confirmRemoval}
+                            onChange={(e) => setConfirmRemoval(e.target.checked)}
+                          />
+                          Yes, unlabel those pixels
+                        </label>
+                      </>
+                    )
+                    : 'those classes have no labeled pixels'}
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
         <div className="form-row">
           <label>Masks folder</label>
@@ -313,7 +457,10 @@ export default function ProjectSetup({ mode = 'create', root, source, defaults, 
           <button
             className="primary"
             disabled={busy || !form.project_name.trim()
-              || tileTooSmall || overlapInvalid || outputMissing}
+              || tileTooSmall || overlapInvalid || outputMissing
+              || !form.classes.length
+              || form.classes.some((c) => !String(c.name).trim())
+              || (needsConfirm && !confirmRemoval)}
             onClick={() => onSubmit(form)}
           >
             {editing

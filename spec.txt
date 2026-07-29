@@ -1,7 +1,7 @@
 ================================================================================
 MAGIC WAND — AS-BUILT SPECIFICATION
 Kaio-ken Labeler
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 ================================================================================
 
 This describes the wand as it is actually implemented, not as it was designed.
@@ -11,9 +11,10 @@ by preference.
 
 Files:
   backend/api.py                          the whole selection algorithm
+  backend/sam_service.py                  the SAM2 encoder the second source uses
   frontend/src/components/LabelerPane.jsx  tool state, preview, commit
   frontend/src/App.jsx                     the bridge call
-  backend/test_wand.py                     24 invariant tests
+  backend/test_wand.py                     30 invariant tests
 
 
 ================================================================================
@@ -41,6 +42,10 @@ selection shift under you.
 (Negative clicks remove pixels by design. That is what they are for, and the red
 marker is what distinguishes them.)
 
+There are TWO SOURCES for what "similar material" means — the image's own bands,
+or SAM2 encoder features (the `SAM features` switch). They share every line of
+machinery below except the distance itself. See 2.2.
+
 
 ================================================================================
 2. HOW A SELECTION IS COMPUTED
@@ -65,29 +70,118 @@ All of this runs in the backend, in Api.wand_select.
     Averaging within one click denoises it without any such reach.
 
 2.2 DISTANCE FIELD (per sample)
-    Api._wand_fields(samples, sample_size) -> [((y, x), field), ...]
+    Api._wand_fields(samples, sample_size, source, level)
+        -> [((y, x), field), ...]
 
-    For each sample, a full-image field of spectral distance to that sample's
-    reference:
+    One full-image field per sample: the distance from every pixel to that
+    sample's reference. `source` picks how that distance is measured, and
+    nothing else in this document changes with it — connectivity, the budget,
+    the negatives and protection all consume only the field.
+
+    CACHED per (source, level, sample point, sample_size) in Api._wand_cache,
+    invalidated on image change and on a display-band change. Adding a click
+    costs one new field; dragging the tolerance slider costs none; flipping
+    between the two sources costs nothing after the first look at each.
+
+2.2.1 SOURCE "image" — SPECTRAL (the default)
+      Api._spectral_field(y, x, sample_size)
 
         distance = sqrt( mean over bands of (pixel_band - ref_band)^2 )
 
-    Computed over EVERY band of SentinelImage.normalized, not the three-band RGB
-    composite the pane displays. Water and terrain shadow are near-identical in
-    true colour and separate cleanly in NIR/SWIR; the composite has discarded
-    those bands before the frontend sees a pixel.
+      Computed over EVERY band of SentinelImage.normalized, not the three-band
+      RGB composite the pane displays. Water and terrain shadow are
+      near-identical in true colour and separate cleanly in NIR/SWIR; the
+      composite has discarded those bands before the frontend sees a pixel.
 
-    Measured: all-band matching scores 0.524 mean IoU against ground truth
-    versus 0.481 for RGB-only — +0.043, bootstrap confidence 93%. HSV was tried
-    and scored WORSE than RGB (0.414); it re-encodes the same three numbers and
-    a third of this imagery sits below saturation 0.15 where hue is noise.
+      Measured: all-band matching scores 0.524 mean IoU against ground truth
+      versus 0.481 for RGB-only — +0.043, bootstrap confidence 93%. HSV was
+      tried and scored WORSE than RGB (0.414); it re-encodes the same three
+      numbers and a third of this imagery sits below saturation 0.15 where hue
+      is noise.
 
-    RMS per band rather than a plain Euclidean norm, so one tolerance value
-    means the same thing whether a project has 4 bands or 12.
+      RMS per band rather than a plain Euclidean norm, so one tolerance value
+      means the same thing whether a project has 4 bands or 12.
 
-    CACHED per (sample point, sample_size) in Api._wand_cache, invalidated on
-    image change. Adding a click costs one new field; dragging the tolerance
-    slider costs none.
+2.2.2 SOURCE "sam" — SAM2 ENCODER FEATURES
+      Api._sam_features(level), Api._embedding_field(y, x, sample_size, level)
+
+      The same click, asked a different question: not "which pixels are this
+      colour" but "which pixels does SAM2's encoder describe the way it
+      describes this one". Groups by texture and learned appearance rather than
+      by reflectance.
+
+        distance = 1 - cosine( pixel_feature, ref_feature )
+
+      LEVEL selects one of the encoder's three outputs (sam_service.FEATURE_LEVELS):
+
+        fine   high_res_feat0    32 ch at 256x256    DEFAULT
+        mid    high_res_feat1    64 ch at 128x128
+        deep   image_embed      256 ch at  64x64
+
+      The grids are over the encoder's fixed 1024x1024 input frame, so on a
+      512 px tile one `fine` cell is 2x2 px and one `deep` cell is 8x8 px. A
+      pixel maps onto the grid by plain proportional scaling — the encoder
+      resizes to a square regardless of aspect.
+
+      FEATURES ARE CENTRED on the image's own mean feature before normalizing.
+      This is load-bearing, not hygiene. Raw SAM2 features share a large common
+      component, so everything is far from everything: measured on a 512 px
+      tile, distances from a click to the rest of the scene ran 0.4 to 0.8, with
+      the whole useful range inside the last tenth of that — at `mid`, tolerance
+      0.5 selected 1.9% of the image and 0.7 selected 91.6%. Centred, the field
+      starts at 0 at the click and spreads to ~1.5, and the tolerance has
+      somewhere to work. The consequence is that a tolerance is relative to the
+      variety in the tile in front of you, not to SAM2's feature space at large.
+
+      COSINE, not a Euclidean distance: feature magnitude carries no meaning
+      here and varies wildly between the three levels; the angle does. Same
+      reason the spectral field uses an RMS.
+
+      THE FIELD IS UPSAMPLED, NOT THE FEATURES. The distance is computed on the
+      encoder's own grid and only the finished one-channel field is resized to
+      image resolution (sam_service.resize_bilinear, matching how SAM2 upscales
+      its own masks). Upsampling `deep`'s 256 channels to a 512 px image would
+      cost 268 MB; its field costs 1 MB, and nothing downstream can tell — the
+      flood fill, the valid mask and protection all still run at pixel
+      resolution.
+
+      A consequence worth knowing: after that upsample the exact zero at the
+      reference cell survives nowhere (measured 0.09 at `fine` to 0.44 at
+      `deep`, at the clicked pixel itself). The wand does not depend on it —
+      2.3 seeds the sample into its own match set regardless.
+
+      WHY `fine` IS THE DEFAULT, against the obvious measurement. Region growing
+      needs a click's neighbours to resemble it, and by that test `fine` looks
+      hopeless: the median distance within 10 px of a click is 1.10 against a
+      whole-image median of 1.02 — the ground beside a click is as unlike it as
+      the far side of the scene — while at `deep` the same numbers are 0.41
+      against 0.98. But growing smoothly is not landing on the right thing. One
+      `deep` cell covers 8x8 px, which at 10 m per pixel is 80 m of ground, and
+      Sentinel-2 classes are often a few pixels across; its selections are the
+      right shape at the wrong scale. `fine` grows grudgingly and needs most of
+      the tolerance range, but its boundaries are where the material actually
+      changes. Established by labeling with it, not by the metric.
+
+      Likely mechanism: SAM2 learned its semantics on photographs, where a deep
+      feature spans one object. A 10 m/px tile has nothing at that scale, so
+      only the low-level texture features carry usable signal. If that is right,
+      the ordering should flip on higher-resolution imagery — which is why all
+      three levels stay selectable instead of the loser being deleted.
+
+      COST: one encoder pass per image (~6 s on CPU), shared with the SAM2 snap
+      tool through SamService's cache in both directions. Everything after is
+      ~0.02 s. See 6.
+
+      WHAT IT GIVES UP: the encoder only ever sees rgb_composite(), so this
+      source discards exactly the extra bands 2.2.1 exists to use.
+
+      IS IT WORTH IT: measured over 60 labeled regions, each source at its own
+      best per-region tolerance — spectral 0.593 mean IoU, embedding 0.568,
+      embedding winning 27 of 60, both clearing IoU>=0.5 on exactly 39. It is
+      not a better tool. It is a differently-wrong one: the two IoUs correlate
+      only 0.538, and picking the better per region would score 0.665. That is
+      an oracle nobody has while labeling, but it is why the capability is kept
+      as a switch on the wand rather than as a second tool or not at all.
 
 2.3 MATCH SET (per sample)
 
@@ -181,11 +275,17 @@ INPUT
               is one key instead of another argument whose position nobody
               remembers:
 
-      tolerance    float, REQUIRED. Spectral distance in normalized band units
-                   (an RMS per-band difference). Typically 0.08–0.28.
+      tolerance    float, REQUIRED. In the units of the chosen source: an RMS
+                   per-band difference for "image" (typically 0.07–0.19), a
+                   centred cosine distance for "sam" (typically 0.7–0.95 at the
+                   fine level).
+      source       "image" (default) or "sam". See 2.2.
+      level        "fine" (default), "mid" or "deep". Ignored unless
+                   source="sam".
       max_pixels   int or None (default None = unbounded). Budget PER SAMPLE.
       sample_size  int, default 1. Pixels averaged into each reference colour,
-                   clamped to 1..MAX_SAMPLE_PIXELS (25).
+                   clamped to 1..MAX_SAMPLE_PIXELS (25). Under source="sam" it
+                   counts FEATURE CELLS, not pixels.
       negatives    [[x, y], ...] or None. Exclusion clicks.
       global       bool, default false. Drop the connectivity bound.
       protect      bool, default false. Skip already-labeled pixels.
@@ -211,13 +311,21 @@ OUTPUT (failure)
       ok: false, error: "<message>"
 
     Every bad input returns an error rather than raising: no image loaded,
-    empty sample list, non-numeric tolerance / sample_size / max_pixels, and a
-    non-positive budget.
+    empty sample list, non-numeric tolerance / sample_size / max_pixels, a
+    non-positive budget, an unknown source or level, SAM2 model files missing,
+    and a failed encoder pass. The encode is forced BEFORE the sample loop so a
+    model error comes back as a message the pane can show rather than a
+    traceback across the bridge.
 
 RELATED STATE
-    Api._wand_cache = (image_name, {(y, x, sample_size): distance_field})
-        Cleared in Api._set_image, so a stale field can never survive an
-        image switch.
+    Api._wand_cache = (image_name, {(source, level, y, x, sample_size): field})
+        Cleared in Api._set_image, so a stale field can never survive an image
+        switch, and in update_settings when the display bands change — the
+        encoder reads those three bands, so its fields describe an image that no
+        longer exists.
+    Api._sam_stack_cache = (image_name, {level: centred unit-length features})
+        Cleared alongside it. Holds the prepared stack, not the raw encoder
+        output, so each new sample is one dot product.
     Api._labels
         Read by `protect`. Kept current by set_labels, which the frontend calls
         on every stroke end.
@@ -232,7 +340,8 @@ RELATED STATE
 
     Calls api('wand_select', samples.map(p => [p.x, p.y]), options), then
     unpacks the bit-packed mask into a byte-per-pixel Uint8Array that the
-    preview and the commit both consume.
+    preview and the commit both consume. Source-agnostic: it forwards whatever
+    options it is given.
 
     Passed down to LabelerPane as the onWandSelect prop.
 
@@ -242,7 +351,13 @@ RELATED STATE
                                       Mirrored in wandSamplesRef for the
                                       window-level key handler.
     wandMaskRef      the current selection, byte per pixel
-    wandTolerance    slider 1..100, default 26
+    wandTolerances   {classId: slider}, PER CLASS — only the values you have
+                     changed; anything untouched falls through to that class's
+                     measured seed (4.3)
+    wandSam          bool, default false — the SAM-features switch
+    wandSamRef       the same, for in-flight runs and effects
+    wandSamTolerance slider 1..100, default 50; one value for every class
+    wandLevel        'fine' | 'mid' | 'deep', default 'fine'
     wandBudgetStep   slider 1..100, default 100 (= no budget)
     wandSampleSize   slider 1..25,  default 9
     wandProtect      bool, default TRUE
@@ -253,11 +368,64 @@ RELATED STATE
                      discarded, so dragging a slider cannot leave the preview
                      showing a value you have already moved past
 
+    Changing the class, the source or the level RE-RUNS the pending samples
+    rather than clearing them. For class and source that is a correctness
+    requirement — the tolerance changes with both, so the preview would
+    otherwise be the one the old threshold produced while the slider reads the
+    new number, and Enter would commit a mask matching neither. For level it is
+    the point of the selector: the three are only comparable on the same click.
+
 4.3 SLIDER MAPPINGS
 
-    TOLERANCE   backend tolerance = slider / WAND_TOL_SCALE (200).
-                Default 26 = 0.130. Measured: the tolerance maximising IoU sits
-                at p10 0.084, median 0.130, p90 0.280 across 45 regions.
+    TOLERANCE (source="image")
+                backend tolerance = slider / WAND_TOL_SCALE (200).
+
+                KEPT PER CLASS. What counts as "the same material" is a property
+                of the material: the per-class optima span 0.07 to 0.19, and one
+                global number is a compromise weighted toward whichever class
+                you have most of. Seeds, in slider units:
+
+                  Urban       38 (0.19)     Shrub        20 (0.10)
+                  Raw-Earth   28 (0.14)     Meadow       18 (0.09)
+                  Road        24 (0.12)     Agri-Green   18 (0.09)
+                  Forest      22 (0.11)     Water        14 (0.07)
+                  Wetland     22 (0.11)     (anything else)  26 (0.13)
+
+                Keyed by class NAME, not id — these are properties of the
+                material, and ids are per project. A renamed or unrecognised
+                class falls back to 26.
+
+                MEASURED over 388 regions across 20 images, clicking the most
+                interior pixel of each connected labeled region and scoring IoU:
+                seeded per class 0.397 mean IoU against 0.353 for a flat 0.13
+                (+12.4%), share of regions reaching IoU>=0.5 30.9% -> 36.3%, and
+                median over-selection halved, 10.6% -> 4.7%. 221 regions
+                improve, 160 get worse, 7 unchanged — the mean rises because the
+                wins are bigger, not because it helps everywhere. The ceiling if
+                you retuned per region is 0.585.
+
+                WHY 26 IS STILL THE FALLBACK: it cannot be improved on as a
+                single number. The best fixed setting over those 388 regions is
+                0.14 at 0.349 mean IoU against 0.347 for 0.13 — noise — and the
+                curve is flat from 0.11 to 0.15. What pins it is the cliff to
+                the right: median over-selection runs 6% at 0.13, 25% at 0.15,
+                118% at 0.17 and 244% at 0.19 while IoU falls away slowly. The
+                wand is additive, so selecting too little costs another click
+                and selecting too much costs an undo and hand correction. The
+                default belongs on the low side of the peak.
+
+    TOLERANCE (source="sam")
+                backend tolerance = 0.4 + (slider / 100) * 0.8, i.e. the slider
+                spans [0.4, 1.2]. Default 50 = 0.8.
+
+                NOT A BARE DIVIDE, because the useful distances do not start at
+                zero. At `fine` on a 512 px tile, three clicks each selected
+                under 0.15% of the image below 0.7, 0.6–2.3% at 0.8, and 7–30%
+                by 1.0: a region at 0.7–0.95, a speck below, the scene above.
+                A plain /100 left that whole band in the right-hand fifth of the
+                travel. One value for every class: the per-class figures have
+                not been measured for this source, and seeding it from the
+                spectral ones would dress a guess in someone else's evidence.
 
     MAX PX      wandBudget(slider): log scale, 100 px .. 100,000 px, rounded to
                 two significant figures; slider at max returns null (no cap).
@@ -273,6 +441,8 @@ RELATED STATE
                 NOTE the opposite result appears if tolerance is swept per
                 click (1 px looks best) — a sweep can retune around a noisy
                 reference after the fact, which nobody does while labeling.
+                Inert for the tuning above: 0.343 to 0.349 mean IoU across
+                1..25, so it is set from click-to-click agreement instead.
 
 4.4 INTERACTION
 
@@ -325,38 +495,65 @@ RELATED STATE
 
 4.8 CONTROLS
     A dedicated row under the pane title, mounted only in wand mode: the three
-    sliders on the left, `protect labels` and `whole image` on the right. The
-    pane title bar already overflowed at three sliders.
+    sliders on the left, then `SAM features`, the fine/mid/deep picker (mounted
+    only while that switch is on, immediately beside it), `protect labels` and
+    `whole image` on the right. The pane title bar already overflowed at three
+    sliders.
 
-    All three sliders respond to the scroll wheel.
+    All three sliders respond to the scroll wheel. The tolerance readout shows
+    the cosine value alongside the slider position under source="sam" — the band
+    that works is narrow enough to be worth being able to name.
 
     The readout in the title bar shows sample count, selected pixels and
     percentage, and calls out `capped`, `protected`, and a runaway warning past
     WAND_WARN_FRACTION (40%) of the image.
+
+    `SAM features` is disabled when sam2/onnx/ is missing, with the same tooltip
+    the SAM2 tool button uses.
 
 
 ================================================================================
 5. TESTS
 ================================================================================
 
-    python3 backend/test_wand.py     (24 tests)
+    python3 backend/test_wand.py     (30 tests)
 
 Runs against a scratch COPY of the project in /tmp, never label_raster/. An
 earlier version wrote to the real ground truth and raced the running app's
 autosave; do not reintroduce that.
 
-Covered: the options contract and its error paths; strict additivity of
-positive clicks across every tolerance/budget combination; a sample's region
-being identical alone or alongside others; exact per-sample budgets;
-connectivity after clipping; a sample always being inside its own selection;
-nodata exclusion; count matching the mask; global mode's reach, budget,
-nearest-first trimming and additivity; protection as a strict subset that
-conducts through labeled pixels and reports what it withheld; negatives
+SHARED BY BOTH SOURCES (24): the options contract and its error paths; strict
+additivity of positive clicks across every tolerance/budget combination; a
+sample's region being identical alone or alongside others; exact per-sample
+budgets; connectivity after clipping; a sample always being inside its own
+selection; nodata exclusion; count matching the mask; global mode's reach,
+budget, nearest-first trimming and additivity; protection as a strict subset
+that conducts through labeled pixels and reports what it withheld; negatives
 shrinking the selection and reaching every fragment; and the combinations
 (global+protect, negatives+global+protect+budget).
 
+THE EMBEDDING SOURCE (6), skipped when sam2/onnx/ is absent:
+  - a bad source or level is a message, not a traceback
+  - the field is bounded in [0, 2], finite, and exactly the size of the image
+    (it is upsampled from a smaller grid, so its shape is the one thing that
+    could silently drift from the label buffer)
+  - the two sources produce genuinely different fields — a guard against the
+    embedding path quietly falling back to spectral
+  - adding a sample never removes a pixel, on embeddings too
+  - the same clicks give the same mask, the budget still bites, and a connected
+    selection is still one piece
+  - the shipped default tolerance lands inside the band where the source is
+    usable at all (0.05%–25% of the image per click) — it fails if a re-exported
+    encoder moves the distances, which is the point
+
 The nodata test requests 14.tiff specifically — it is the only image in this
 dataset with any nodata, and the test silently passed against 00.tiff before.
+
+DELIBERATELY NOT TESTED: that the clicked pixel sits at distance zero under
+source="sam". It does on the feature grid, by construction, but the field is
+read at pixel resolution after a bilinear upsample, so the exact zero survives
+nowhere (see 2.2.2). An earlier version of that test asserted it and failed
+honestly.
 
 
 ================================================================================
@@ -370,21 +567,29 @@ dataset with any nodata, and the test silently passed against 00.tiff before.
     5 samples, budget 100,000            ~180 ms
     mask payload                         32 KB raw / 42.7 KB base64
 
+    source="sam", first click on an image   ~6.0 s   (the encoder pass)
+    source="sam", everything after          ~0.00–0.02 s
+    sam_snap immediately after              ~0.04 s   (no re-encode)
+
     (512x512, 10 bands, on this machine. Re-measure rather than trust these if
     it matters — they were taken with a warm cache for everything but the
-    first-click row.)
+    first-click rows.)
 
 The budget path is the expensive one, being O(samples * budget) Python. It runs
 only when a region exceeds the cap. If a slider drag ever feels sticky, that is
 where the time goes.
+
+The encoder pass is the other one, and it is paid once per image and shared with
+the SAM2 snap tool in both directions — whichever runs first pays for both. The
+cursor shows 'wait' while it does.
 
 
 ================================================================================
 7. KNOWN LIMITATIONS
 ================================================================================
 
-- Tolerance is global across samples. Each sample has its own reference colour
-  but they all share one threshold.
+- Tolerance is per class, but still global across the samples of one click set.
+  Each sample has its own reference; they all share one threshold.
 
 - A negative click can remove pixels a positive click had selected. By design,
   but it means the additivity guarantee is about positive clicks only.
@@ -396,6 +601,19 @@ where the time goes.
 - Reference colours are per-image and per-session. Tuning a good Water sample
   on one image gives you nothing on the next; there is no stored per-class
   spectrum. This was discussed as "reusable class references" and not built.
+  (The per-class TOLERANCE does persist for the session — the reference colour
+  does not.)
+
+- The per-class tolerance seeds are measured on this dataset's taxonomy and
+  matched by name. Shrub (n=17), Water (n=18) and Wetland (n=4) rest on thin
+  samples; 14 of the 34 images were not in the sweep.
+
+- Under source="sam" the tolerance is relative to the variety in the current
+  tile, because the features are centred per image. The same setting can bite
+  differently on a uniform tile and a busy one.
+
+- source="sam" sees only the RGB composite, discarding exactly the bands that
+  justify computing the spectral field in the backend at all.
 
 - The selection is recomputed from scratch on every click and every slider
   step. Fine at 512x512; a much larger image would want incremental updates.

@@ -17,7 +17,7 @@ from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from api import _WAND_CONNECTIVITY  # noqa: E402
+from wand import _WAND_CONNECTIVITY  # noqa: E402
 from test_no_torch import _scratch_project  # noqa: E402
 
 # A tolerance loose enough that regions are large enough to be interesting, and
@@ -369,6 +369,170 @@ def test_an_under_budget_region_is_not_reported_as_capped():
         r = _select(api, [A], tolerance=0.05, max_pixels=100000)
         if r["capped"]:
             _fail("a region smaller than the budget was reported as capped")
+    _run(check)
+
+
+# ---------- the SAM2 embedding source ----------
+#
+# Wand-SAM keeps every invariant above and changes only what distance means, so
+# what these check is that the substitution really is that clean: the same
+# additivity, the same option handling, and a field that is a cosine distance
+# at pixel resolution rather than a resized approximation of one.
+
+# A cosine distance against the image's mean feature, not an RMS band
+# difference -- see Api._sam_features and LabelerPane's SAM_TOL_*. These are
+# the UI's defaults: the fine level, which is the one that produces usable
+# selections on Sentinel-2, at the tolerance where a click takes a region
+# rather than a speck or the whole scene.
+SAM_TOL = 0.8
+SAM_LEVEL = "fine"
+
+
+def _field(api, point, source, level=SAM_LEVEL, size=9):
+    """One sample's raw distance field, straight from the Wand.
+
+    Goes through the algorithm rather than the bridge because these checks are
+    about the field itself, not about what survives base64. set_image is what
+    Api.wand_select would have called; it is cheap and idempotent.
+    """
+    from wand import parse_options
+    api._wand.set_image(api._image, api._sam_image_key(), api._display_bands())
+    options = parse_options({"tolerance": SAM_TOL, "sample_size": size,
+                             "source": source, "level": level})
+    return api._wand.fields([point], options)[0]
+
+
+def _sam_ready(api):
+    """Whether the encoder can actually run here; these tests skip if not."""
+    reason = api._sam.unavailable_reason()
+    if reason is not None:
+        print(f"     (SAM2 unavailable: {reason} — skipping)")
+        return False
+    return True
+
+
+def _sam_select(api, samples, **options):
+    opts = {"source": "sam", "level": SAM_LEVEL, "tolerance": SAM_TOL,
+            "sample_size": 9}
+    opts.update(options)
+    return api.wand_select([[x, y] for x, y in samples], opts)
+
+
+def test_sam_source_is_rejected_cleanly_when_misconfigured():
+    """A bad source or level is a message, not a traceback across the bridge."""
+    def check(api):
+        for opts, why in (({"tolerance": SAM_TOL, "source": "nonsense"}, "bad source"),
+                          ({"tolerance": SAM_TOL, "source": "sam",
+                            "level": "nonsense"}, "bad level")):
+            r = api.wand_select([[10, 10]], opts)
+            if r.get("ok") or not r.get("error"):
+                _fail(f"{why} should return an error, got {r}")
+    _run(check)
+
+
+def test_the_embedding_field_is_a_cosine_distance_at_pixel_resolution():
+    """Bounded in [0, 2], and the size of the image.
+
+    The field is computed on the encoder's own grid and upsampled, so its
+    shape is the one thing that could silently drift from the label buffer --
+    everything downstream indexes both with the same flat offsets.
+
+    Deliberately no assertion that the click sits at distance zero. It does on
+    the feature grid, by construction, but the field is read at pixel
+    resolution: a bilinear upsample blends the reference cell with neighbours
+    that may be far away, so the exact zero survives nowhere. Measured at
+    0.09 (fine) to 0.44 (deep) at the click itself. The wand does not depend on
+    it either -- wand_select seeds `within[y, x] = True` so that a click is
+    never a no-op regardless of its own distance.
+    """
+    def check(api):
+        if not _sam_ready(api):
+            return
+        for level in ("fine", "mid", "deep"):
+            _, field = _field(api, A, "sam", level)
+            if field.shape != (api._image.height, api._image.width):
+                _fail(f"{level}: field is {field.shape}, image is "
+                      f"{(api._image.height, api._image.width)}")
+            if not np.isfinite(field).all():
+                _fail(f"{level}: field has non-finite values")
+            if field.min() < -1e-5 or field.max() > 2 + 1e-5:
+                _fail(f"{level}: cosine distance out of [0, 2]: "
+                      f"{field.min()}..{field.max()}")
+    _run(check)
+
+
+def test_the_default_tolerance_selects_a_region_and_not_the_scene():
+    """The UI's default lands in the band where the level is usable at all.
+
+    The band is narrow and does not start at zero -- at the default level a
+    click takes under 0.15% of the image below 0.7 and over 7% by 1.0 -- so a
+    default outside it makes the tool look broken rather than mistuned. This
+    fails if a re-exported encoder moves the distances, which is the point:
+    the number in LabelerPane would then need re-sighting.
+
+    Deliberately generous bounds. This pins "the default is inside the useful
+    band", not a particular selection size, which varies by what was clicked.
+    """
+    def check(api):
+        if not _sam_ready(api):
+            return
+        n = api._image.height * api._image.width
+        for point in (A, B, C):
+            share = 100 * _sam_select(api, [point], protect=False)["count"] / n
+            if not 0.05 <= share <= 25:
+                _fail(f"at tolerance {SAM_TOL} a click at {point} selected "
+                      f"{share:.2f}% of the image — outside the band the "
+                      f"default is meant to sit in")
+    _run(check)
+
+
+def test_the_two_sources_measure_different_things():
+    """Guards against the embedding source quietly falling back to spectral.
+
+    Compares the fields rather than the masks: two different measures can
+    happen to select the same region at some tolerance, but they cannot
+    produce the same distance at every pixel.
+    """
+    def check(api):
+        if not _sam_ready(api):
+            return
+        _, spectral = _field(api, A, "image")
+        _, embedding = _field(api, A, "sam")
+        if np.allclose(spectral, embedding):
+            _fail("the embedding field is identical to the spectral one")
+    _run(check)
+
+
+def test_adding_a_sample_never_removes_a_pixel_on_embeddings():
+    """The wand's central property, on the other source."""
+    def check(api):
+        if not _sam_ready(api):
+            return
+        one = _mask(_sam_select(api, [A], protect=False))
+        two = _mask(_sam_select(api, [A, B], protect=False))
+        lost = int((one & ~two).sum())
+        if lost:
+            _fail(f"a second sample dropped {lost} px the first had selected")
+    _run(check)
+
+
+def test_the_embedding_selection_is_deterministic_and_respects_the_budget():
+    """Same clicks, same mask -- and the cap still bites the same way."""
+    def check(api):
+        if not _sam_ready(api):
+            return
+        first = _mask(_sam_select(api, [A], protect=False))
+        again = _mask(_sam_select(api, [A], protect=False))
+        if not np.array_equal(first, again):
+            _fail("two identical embedding selections disagree")
+        capped = _sam_select(api, [A], protect=False, max_pixels=BUDGET)
+        if capped["count"] > BUDGET:
+            _fail(f"budget ignored on embeddings: {capped['count']} > {BUDGET}")
+        # Connectivity still applies: every selected pixel is reachable from
+        # the click, exactly as with the spectral source.
+        pieces = ndimage.label(_mask(capped), structure=_WAND_CONNECTIVITY)[1]
+        if pieces > 1:
+            _fail(f"a connected embedding selection came back in {pieces} pieces")
     _run(check)
 
 

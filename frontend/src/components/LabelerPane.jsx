@@ -31,9 +31,125 @@ const WAND_WARN_FRACTION = 0.4
 // Measured over 45 labeled regions across five images: the tolerance that
 // maximises IoU sits at p10 0.084, median 0.130, p90 0.280. 26 (= 0.130) is
 // therefore the default, and the useful band 17..56 lands mid-travel.
+//
+// Re-measured since over 388 regions across 20 images, sweeping tolerance and
+// sample size jointly and scoring the best *fixed* setting rather than the
+// median of the per-region optima: the peak is 0.14 at mean IoU 0.349 against
+// 0.347 for 0.13, and the curve is flat from 0.11 to 0.15. That is noise, so
+// 26 stands. Sample size is likewise inert here (0.343 to 0.349 across 1..25);
+// it is set from click-to-click agreement instead, for the reasons below.
+//
+// What actually pins the default is not the peak but the cliff to the right of
+// it. Median over-selection runs 6% at 0.13, 25% at 0.15, 118% at 0.17 and
+// 244% at 0.19, while the IoU falls away slowly -- so the two directions cost
+// different things. A wand click is additive, so selecting too little costs
+// another click, and selecting too much costs an undo and hand correction.
+// The default belongs on the low side of the peak, which is where it is.
+//
+// Note this is one number serving nine classes whose own optima span 0.07 to
+// 0.19 -- which is what WAND_TOL_SEEDS below does something about.
 const WAND_TOL_MIN = 1
 const WAND_TOL_MAX = 100
 const WAND_TOL_SCALE = 200 // slider value / SCALE = the backend's tolerance
+const WAND_TOL_DEFAULT = 26 // = 0.130, for a class with no measured optimum
+
+// Starting tolerance per class, in slider units. One global number is a
+// compromise between materials that want very different thresholds, and from
+// the same 388-region sweep the per-class optima are consistent enough to seed
+// from (p25/median/p75 of each class's per-region optimum in brackets):
+//
+//   Urban        0.19  (.17/.24/.32)   +0.069 IoU over the global 0.13
+//   Raw-Earth    0.14  (.10/.15/.22)   +0.008   -- the most common class, and
+//   Road         0.12  (.11/.13/.21)   +0.002      the reason 0.13 is the
+//   Forest       0.11  (.10/.13/.18)   +0.023      global compromise
+//   Wetland      0.11  (.07/.10/.16)   +0.002
+//   Shrub        0.10  (.10/.11/.13)   +0.108
+//   Meadow       0.09  (.09/.11/.14)   +0.130
+//   Agri-Green   0.09  (.09/.10/.14)   +0.067
+//   Water        0.07  (.07/.13/.27)   +0.019
+//
+// Worth +12% mean IoU over one global tolerance (0.353 -> 0.397); the ceiling
+// if you retuned per region is 0.585, which no default can reach.
+//
+// Keyed by class NAME, not id: these are properties of the material, and ids
+// are per project -- seeding by id would hand Urban's threshold to whatever a
+// different project happens to call class 0. A class with no entry (Snow here)
+// starts at WAND_TOL_DEFAULT. Thin samples: Shrub n=17, Water n=18, Wetland
+// n=4, so those three are the ones to distrust.
+const WAND_TOL_SEEDS = {
+  urban: 38,
+  rawearthagriculture: 28,
+  road: 24,
+  forest: 22,
+  wetland: 22,
+  shrub: 20,
+  meadow: 18,
+  agriculturegreen: 18,
+  water: 14,
+}
+
+function tolSeedKey(name) {
+  return String(name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+// With the SAM-features switch on, the wand measures a cosine distance
+// between mean-centred SAM2 feature vectors (see Api._sam_features), which has
+// nothing to do with an RMS band difference -- so the slider stays 1..100 and
+// maps onto its own range.
+//
+// Not a bare divide, because the useful distances do not start at zero. On a
+// 512px Sentinel-2 tile at the fine level, three clicks each selected under
+// 0.15% of the image below 0.7, 0.6-2.3% at 0.8, and 7-30% by 1.0: a region
+// at 0.7-0.95, a speck below, the scene above. Mapping the slider onto
+// [0.4, 1.2] puts that band across the middle of the travel and still leaves
+// the deep level's lower band (0.5-0.8) inside it. A plain /100 left the whole
+// working range pinned to the right-hand fifth of the slider.
+const SAM_TOL_FLOOR = 0.4
+const SAM_TOL_CEIL = 1.2
+const SAM_TOL_DEFAULT = 50 // = 0.8, mid-band for the fine level
+
+function samTolerance(slider) {
+  return SAM_TOL_FLOOR + (slider / WAND_TOL_MAX) * (SAM_TOL_CEIL - SAM_TOL_FLOOR)
+}
+
+// Which encoder feature map to match on (see sam_service.FEATURE_LEVELS). The
+// grid sizes are for the encoder's fixed 1024² input frame, so on a 512px tile
+// "fine" is one cell per 2x2 pixels and "deep" one per 8x8.
+//
+// "fine" is the default: on Sentinel-2 it is the only level that produces
+// selections worth committing, established by labeling with it rather than by
+// measurement.
+//
+// It is worth recording that the obvious measurement says the opposite, and
+// why it is the wrong measurement. Region growing needs a click's neighbours
+// to resemble it, and by that test fine looks hopeless -- the median distance
+// within 10 px of a click is 1.10 against a whole-image median of 1.02, so the
+// ground beside a click is as unlike it as the far side of the scene, while at
+// deep the same numbers are 0.41 against 0.98. But growing smoothly is not the
+// same as landing on the thing you meant: one deep cell covers 8x8 px, which
+// at 10 m per pixel is 80 m of ground, so its selections are the right shape
+// at the wrong scale -- and Sentinel-2 classes are often a few pixels across.
+// Fine grows grudgingly and needs most of the tolerance range, but its
+// boundaries are where the material actually changes.
+//
+// The likely reason is that SAM2 learned its semantics on photographs, where a
+// deep feature covers one object; a 10 m/px tile has nothing at that scale, so
+// only the low-level texture features carry usable signal. If so, the ordering
+// should flip on higher-resolution imagery -- which is exactly why all three
+// levels stay selectable instead of the loser being deleted.
+const SAM_LEVELS = [
+  { id: 'fine', label: 'fine',
+    title: 'high_res_feat0 — 32 channels at 256². Texture-level features and '
+      + 'the sharpest boundaries. The one that works on Sentinel-2; needs a '
+      + 'high tolerance (around 0.8) before it selects a region at all' },
+  { id: 'mid', label: 'mid',
+    title: 'high_res_feat1 — 64 channels at 128², between the two' },
+  { id: 'deep', label: 'deep',
+    title: 'image_embed — 256 channels at 64², what the SAM2 decoder segments '
+      + 'from. Grows the most smoothly with the tolerance, but one cell is '
+      + '8x8 px — too coarse for Sentinel-2 boundaries. Worth retrying on '
+      + 'higher-resolution imagery' },
+]
 
 // Optional budget on how many pixels the wand may select. The slider runs
 // left (tight) to right (loose) and its maximum means "no limit", so sliding
@@ -150,7 +266,7 @@ function makeCrosshairCursor(color) {
 // the app can undo it.
 export default function LabelerPane({
   image, labels, labelsVersion, tool, view, setView, onStrokeEnd, onDiff,
-  onSamSnap, onWandSelect, classColors, fitRef,
+  onSamSnap, onWandSelect, classColors, classes, fitRef, samAvailable,
 }) {
   const canvasRef = useRef(null)
   const [canvasReady, setCanvasReady] = useState(false)
@@ -186,8 +302,32 @@ export default function LabelerPane({
   // with Enter, like the polygon and SAM2 tools. The seed click is kept so
   // dragging the tolerance re-runs the fill from the same point, instead of
   // making you re-click to try a different threshold.
-  // See WAND_TOL_* above for how the default was measured.
-  const [wandTolerance, setWandTolerance] = useState(26)
+  // See WAND_TOL_* above for how the defaults were measured.
+  //
+  // The tolerance travels with the class: what counts as "the same material"
+  // is a property of the material, and the per-class optima span 0.07 to 0.19.
+  // This holds only the values you have changed; anything untouched falls
+  // through to that class's measured seed. So the slider starts somewhere
+  // sensible for each class and then remembers what you actually preferred.
+  const [wandTolerances, setWandTolerances] = useState({})
+  // Measure similarity on SAM2 encoder features instead of the image bands.
+  // A switch on the wand rather than a second wand in the toolbar: measured
+  // over 60 labeled regions the two score the same at their own best
+  // tolerances (mean IoU 0.593 spectral, 0.568 embedding, 27/60 regions won),
+  // so it is not a better tool -- but they fail on *different* regions
+  // (correlation 0.538; taking the better of the two per region would score
+  // 0.665) and the split runs by class. That is worth a checkbox and is not
+  // worth a second set of everything.
+  const [wandSam, setWandSam] = useState(false)
+  const wandSamRef = useRef(wandSam)
+  wandSamRef.current = wandSam
+  // Its own tolerance, read through `tolerance` below: the two are not in the
+  // same units, so carrying one slider's value across the switch would
+  // silently mean something else.
+  const [wandSamTolerance, setWandSamTolerance] = useState(SAM_TOL_DEFAULT)
+  const [wandLevel, setWandLevel] = useState('fine')
+  const wandLevelRef = useRef(wandLevel)
+  wandLevelRef.current = wandLevel
   const [wandBudgetStep, setWandBudgetStep] = useState(WAND_BUDGET_MAX) // max = off
   const [wandSampleSize, setWandSampleSize] = useState(9)
   // On by default: this dataset arrives ~75% labeled, and an unprotected fill
@@ -216,6 +356,24 @@ export default function LabelerPane({
   const wandCommitRef = useRef(() => {})
   const wandCancelRef = useRef(() => {})
   const wandUndoRef = useRef(() => {})
+  const wandRerunRef = useRef(() => {}) // re-runs the current samples, for the class switch
+
+  // Which tolerance every handler below reads and writes. Declared here rather
+  // than beside polygonMode/samMode so the wand's own functions can close over
+  // it. The embedding source keeps one tolerance for every class: its own
+  // per-class figures have not been measured, and inventing seeds for it would
+  // dress a guess up as the spectral wand's evidence.
+  const classSeed = useMemo(() => {
+    const byId = {}
+    for (const c of classes ?? []) {
+      const seed = WAND_TOL_SEEDS[tolSeedKey(c.name)]
+      if (seed !== undefined) byId[c.id] = seed
+    }
+    return byId
+  }, [classes])
+  const tolerance = wandSam
+    ? wandSamTolerance
+    : (wandTolerances[tool.classId] ?? classSeed[tool.classId] ?? WAND_TOL_DEFAULT)
 
   // Callback ref: the canvas only mounts once the Viewport has a `view`
   // (see Viewport), which lands after image/labels are already set. Track the
@@ -238,6 +396,18 @@ export default function LabelerPane({
     if (tool.mode !== 'sam') samCancelRef.current()
     if (tool.mode !== 'wand') wandCancelRef.current()
   }, [tool.mode])
+
+  // Changing class now changes the tolerance with it, so a selection already on
+  // screen has to be recomputed -- otherwise the preview is the one the
+  // previous class's threshold produced while the slider reads the new class's
+  // number, and Enter would commit a mask that matches neither. Skipped when
+  // nothing is pending, and when the embedding source is on (it keeps a single
+  // tolerance, so a class switch changes nothing about the selection).
+  useEffect(() => {
+    if (!wandSamRef.current && wandSamplesRef.current.length) {
+      wandRerunRef.current()
+    }
+  }, [tool.classId])
 
   // Enter commits the pending shape (polygon fill / SAM2 selection), Escape
   // cancels it; in SAM2 mode Backspace drops just the last click.
@@ -533,8 +703,13 @@ export default function LabelerPane({
         drawWandPreview(null)
         return
       }
+      // Read from the ref, not from the render scope: an in-flight run must
+      // ask for the source the toggle is on *now*.
+      const embedding = wandSamRef.current
       const result = await onWandSelect(positives, {
-        tolerance: tolerance / WAND_TOL_SCALE,
+        source: embedding ? 'sam' : 'image',
+        level: wandLevelRef.current,
+        tolerance: embedding ? samTolerance(tolerance) : tolerance / WAND_TOL_SCALE,
         max_pixels: wandBudget(budgetStep),
         sample_size: sampleSize,
         // Never while erasing: the eraser only ever acts on labeled pixels, so
@@ -558,9 +733,35 @@ export default function LabelerPane({
 
   function setTolerance(value) {
     const next = Math.min(WAND_TOL_MAX, Math.max(WAND_TOL_MIN, Math.round(value)))
-    if (next === wandTolerance) return
-    setWandTolerance(next)
+    if (next === tolerance) return
+    if (wandSam) setWandSamTolerance(next)
+    else setWandTolerances((prev) => ({ ...prev, [tool.classId]: next }))
     wandRun(wandSamplesRef.current, next, wandBudgetStep, wandSampleSize, wandProtect, wandGlobal)
+  }
+
+  // Re-runs the clicks already placed against the other source, rather than
+  // clearing them: seeing the same click measured both ways is the point of
+  // having the switch, and the backend caches both fields so flipping back is
+  // free. The tolerance swaps with it, since the two are in different units.
+  function setSamSource(on) {
+    wandSamRef.current = on
+    setWandSam(on)
+    wandRun(wandSamplesRef.current,
+            on ? wandSamTolerance
+               : (wandTolerances[tool.classId] ?? classSeed[tool.classId]
+                  ?? WAND_TOL_DEFAULT),
+            wandBudgetStep, wandSampleSize, wandProtect, wandGlobal)
+  }
+
+  // Switching feature level re-runs the existing samples rather than clearing
+  // them: comparing fine/mid/deep on the same click is the whole point of the
+  // selector, and a cached field makes going back free.
+  function setLevel(next) {
+    if (next === wandLevelRef.current) return
+    wandLevelRef.current = next
+    setWandLevel(next)
+    wandRun(wandSamplesRef.current, tolerance, wandBudgetStep, wandSampleSize,
+            wandProtect, wandGlobal)
   }
 
   // Add a sample. It matches on its own colour rather than shifting a shared
@@ -569,7 +770,7 @@ export default function LabelerPane({
     const next = [...wandSamplesRef.current, { ...pos, label }]
     wandSamplesRef.current = next
     setWandSamples(next)
-    wandRun(next, wandTolerance, wandBudgetStep, wandSampleSize, wandProtect, wandGlobal)
+    wandRun(next, tolerance, wandBudgetStep, wandSampleSize, wandProtect, wandGlobal)
   }
 
   // Drop the most recent sample (Backspace), as SAM2 does for its clicks: a
@@ -578,7 +779,7 @@ export default function LabelerPane({
     const next = wandSamplesRef.current.slice(0, -1)
     wandSamplesRef.current = next
     setWandSamples(next)
-    wandRun(next, wandTolerance, wandBudgetStep, wandSampleSize, wandProtect, wandGlobal)
+    wandRun(next, tolerance, wandBudgetStep, wandSampleSize, wandProtect, wandGlobal)
   }
   wandUndoRef.current = wandUndoSample
 
@@ -587,7 +788,7 @@ export default function LabelerPane({
                           Math.max(WAND_BUDGET_MIN, Math.round(value)))
     if (next === wandBudgetStep) return
     setWandBudgetStep(next)
-    wandRun(wandSamplesRef.current, wandTolerance, next, wandSampleSize, wandProtect, wandGlobal)
+    wandRun(wandSamplesRef.current, tolerance, next, wandSampleSize, wandProtect, wandGlobal)
   }
 
   function setSampleSize(value) {
@@ -595,20 +796,24 @@ export default function LabelerPane({
                           Math.max(WAND_SAMPLE_MIN, Math.round(value)))
     if (next === wandSampleSize) return
     setWandSampleSize(next)
-    wandRun(wandSamplesRef.current, wandTolerance, wandBudgetStep, next, wandProtect, wandGlobal)
+    wandRun(wandSamplesRef.current, tolerance, wandBudgetStep, next, wandProtect, wandGlobal)
   }
 
   function setProtect(on) {
     setWandProtect(on)
-    wandRun(wandSamplesRef.current, wandTolerance, wandBudgetStep,
+    wandRun(wandSamplesRef.current, tolerance, wandBudgetStep,
             wandSampleSize, on, wandGlobal)
   }
 
   function setGlobal(on) {
     setWandGlobal(on)
-    wandRun(wandSamplesRef.current, wandTolerance, wandBudgetStep,
+    wandRun(wandSamplesRef.current, tolerance, wandBudgetStep,
             wandSampleSize, wandProtect, on)
   }
+
+  wandRerunRef.current = () => wandRun(wandSamplesRef.current, tolerance,
+                                       wandBudgetStep, wandSampleSize,
+                                       wandProtect, wandGlobal)
 
   function wandCancel() {
     wandSeq.current++ // abandon any in-flight selection
@@ -770,7 +975,10 @@ export default function LabelerPane({
         {wandMode && (
           <span className={`hint${wandRunaway ? ' warn' : ''}`}>
             {wandCount === null
-              ? 'click a region · click again to extend · right-click to exclude'
+              ? (wandSam
+                ? 'click a region · matched on SAM2 features · first click on an '
+                  + 'image encodes it (a moment)'
+                : 'click a region · click again to extend · right-click to exclude')
               : `${wandSamples.filter((p) => p.label !== 0).length} sample`
                 + `${wandSamples.filter((p) => p.label !== 0).length === 1 ? '' : 's'}`
                 + `${wandSamples.some((p) => p.label === 0)
@@ -812,22 +1020,34 @@ export default function LabelerPane({
           {(
           <label
             className="opacity-control"
-            title={'Spectral distance from the sampled colour, across every '
-              + 'band of the image rather than the three shown on screen. '
-              + 'Measured as an RMS per-band difference, so the number means '
-              + 'the same thing whatever the band count.'}
+            title={wandSam
+              ? 'Cosine distance between SAM2 feature vectors: how differently '
+                + 'the encoder describes a pixel from the one you clicked. '
+                + "Measured against this image's own mean feature, so the "
+                + 'number is relative to the variety in the tile in front of '
+                + 'you — the same setting can bite differently on a uniform '
+                + 'tile and a busy one.'
+              : 'Spectral distance from the sampled colour, across every '
+                + 'band of the image rather than the three shown on screen. '
+                + 'Measured as an RMS per-band difference, so the number means '
+                + 'the same thing whatever the band count.\n\n'
+                + 'Kept per class: each class starts at the tolerance measured '
+                + 'best for that material (they range from 14 for Water to 38 '
+                + 'for Urban) and then remembers whatever you set it to.'}
           >
-            tolerance {wandTolerance}
+            {/* The cosine value alongside the slider position, since the band
+                that works is narrow and worth being able to name. */}
+            tolerance {tolerance}{wandSam ? ` (${samTolerance(tolerance).toFixed(2)})` : ''}
             <input
               type="range"
               min={WAND_TOL_MIN}
               max={WAND_TOL_MAX}
               step="1"
-              value={wandTolerance}
+              value={tolerance}
               onChange={(e) => setTolerance(Number(e.target.value))}
               onWheel={(e) => {
                 e.preventDefault()
-                setTolerance(wandTolerance + (e.deltaY < 0 ? 1 : -1))
+                setTolerance(tolerance + (e.deltaY < 0 ? 1 : -1))
               }}
             />
           </label>
@@ -835,12 +1055,17 @@ export default function LabelerPane({
           {(
           <label
             className="opacity-control"
-            title={'How many pixels around each click are averaged into that '
-              + "sample's reference colour, nearest first. Raising it steadies "
+            title={'How many ' + (wandSam ? 'feature cells' : 'pixels')
+              + ' around each click are averaged into that '
+              + "sample's reference, nearest first. Raising it steadies "
               + 'the reference on noisy ground, at the cost of blurring across '
-              + 'a boundary when the window straddles one.'}
+              + 'a boundary when the window straddles one.'
+              + (wandSam
+                ? ' Cells, not pixels: at the deep level one already covers '
+                  + 'several pixels of the image.'
+                : '')}
           >
-            sample {wandSampleSize} px
+            sample {wandSampleSize} {wandSam ? 'cells' : 'px'}
             <input
               type="range"
               min={WAND_SAMPLE_MIN}
@@ -885,6 +1110,48 @@ export default function LabelerPane({
           </label>
           )}
           <span className="spacer" />
+          <label
+            className="wand-toggle"
+            title={samAvailable
+              ? 'Match on SAM2 encoder features instead of the image bands: '
+                + 'texture and learned appearance rather than reflectance. '
+                + 'Scores about the same overall (mean IoU 0.568 against 0.593 '
+                + 'over 60 labeled regions) but succeeds and fails on '
+                + 'different regions, so it is worth trying where the spectral '
+                + 'fill will not converge. Costs one encoder pass per image, '
+                + 'and gives up the non-visible bands the wand normally uses.'
+              : 'SAM2 model files not found in sam2/onnx/'}
+          >
+            <input
+              type="checkbox"
+              checked={wandSam}
+              disabled={!samAvailable}
+              onChange={(e) => setSamSource(e.target.checked)}
+            />
+            SAM features
+          </label>
+          {/* Which encoder feature map the distance is measured on. Switching
+              re-runs the clicks already placed, so the three are directly
+              comparable on one region -- which is the point of exposing them
+              at all rather than picking one. */}
+          {wandSam && (
+            <label className="wand-levels">
+              features
+              <span className="segmented">
+                {SAM_LEVELS.map((l) => (
+                  <button
+                    key={l.id}
+                    type="button"
+                    className={wandLevel === l.id ? 'active' : ''}
+                    title={l.title}
+                    onClick={() => setLevel(l.id)}
+                  >
+                    {l.label}
+                  </button>
+                ))}
+              </span>
+            </label>
+          )}
           <label
             className="wand-toggle"
             title={'Fill only where nothing is labeled yet, so a selection can '

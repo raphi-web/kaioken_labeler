@@ -12,30 +12,31 @@ import base64
 import os
 import threading
 import traceback
-from collections import deque
 
 import numpy as np
 import rasterio
 import webview
-from scipy import ndimage
 
 from data import (UNLABELED, SentinelImage, array_to_png_b64, read_label_mask,
                   tile_geotiff, write_label_mask)
-from project import (Project, config_from_settings, config_path,
-                     default_config, probe_band_count, save_config)
+from project import (CLASS_PRESETS, DEFAULT_PRESET, Project,
+                     config_from_settings, config_path, default_config,
+                     probe_band_count, save_config)
 from sam_service import SamService, mask_to_polygons
+from wand import Wand, WandError, parse_options
 
-# 4-connected structuring element for the wand's component labelling.
-_WAND_CONNECTIVITY = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
 
-# Offsets of the 25 pixels of a 5x5 window, nearest-first. A wand sample can
-# average over the first N of these, so "N pixels" always means the N closest
-# to the click rather than an arbitrary N of the window.
-_SAMPLE_OFFSETS = sorted(
-    ((dy, dx) for dy in range(-2, 3) for dx in range(-2, 3)),
-    key=lambda o: (o[0] * o[0] + o[1] * o[1], o[0], o[1]),
-)
-MAX_SAMPLE_PIXELS = len(_SAMPLE_OFFSETS)
+def _class_defaults(config):
+    """The palette parts of a setup dialog's `defaults`.
+
+    The presets travel with them rather than being restated in the frontend:
+    the taxonomy is one thing, and a copy of it in JS would drift from the one
+    that actually gets written into project_config.json.
+    """
+    return {"classes": [dict(c) for c in config["classes"]],
+            "class_preset": DEFAULT_PRESET,
+            "class_presets": {name: [dict(c) for c in classes]
+                              for name, classes in CLASS_PRESETS.items()}}
 
 
 class Api:
@@ -48,6 +49,9 @@ class Api:
         self._dirty_geo = {}     # name -> (crs, transform) for each dirty entry above
         self._lock = threading.Lock()
         self._sam = SamService()  # Efficient-SAM2 click assist (onnxruntime)
+        # The wand keeps its own caches, keyed on the image (see Wand.set_image),
+        # and shares the encoder with the snap tool through this SamService.
+        self._wand = Wand(self._sam)
         # Background GeoTIFF tiling (see create_project_from_geotiff)
         self._tiling = {"running": False, "done": 0, "total": 0,
                         "result": None, "error": None}
@@ -58,8 +62,6 @@ class Api:
         self._label_counts = {}
         self._label_scan = {"running": False, "done": 0, "total": 0}
         self._label_thread = None
-        # (image name, {sample point: distance field}) for the wand; see _wand_fields.
-        self._wand_cache = None
         if project_root:
             result = self._init_project(project_root)
             if not result["ok"]:
@@ -70,7 +72,6 @@ class Api:
 
     def _set_image(self, image, name, labels=None):
         """Swap the active image and its label buffer."""
-        self._wand_cache = None  # keyed on the image; a swap makes it stale
         self._image = image
         self._image_name = name
         if image is not None and labels is None:
@@ -117,292 +118,53 @@ class Api:
 
     # ---------- magic wand ----------
 
-    def _sample_colour(self, y, x, sample_size):
-        """Mean spectrum of the `sample_size` pixels nearest (y, x).
-
-        A one-pixel sample is a sample of size one: on textured ground the
-        clicked pixel is easily an outlier that the rest of its own region
-        fails to match. Averaging a small neighbourhood centres the reference
-        on the material rather than on wherever the cursor landed.
-
-        Only valid pixels contribute, so a click near a nodata edge averages
-        the real ground beside it instead of pulling the reference toward the
-        fill value. The clicked pixel itself is always included, so the sample
-        still means what was clicked even at the border.
-        """
-        stack = self._image.normalized
-        valid = self._image.valid_mask
-        _, height, width = stack.shape
-        taken = []
-        for dy, dx in _SAMPLE_OFFSETS[:max(1, sample_size)]:
-            ny, nx = y + dy, x + dx
-            if 0 <= ny < height and 0 <= nx < width and valid[ny, nx]:
-                taken.append(stack[:, ny, nx])
-        if not taken:  # the click itself sits on nodata
-            taken = [stack[:, y, x]]
-        return np.mean(taken, axis=0)
-
-    def _wand_fields(self, samples, sample_size):
-        """One per-pixel spectral distance field (H, W) per sample.
-
-        Runs over every band of SentinelImage.normalized, not the three-band
-        RGB composite the pane displays. That is the whole point of doing this
-        here: water and terrain shadow are near-identical in true colour and
-        separate cleanly in NIR/SWIR, and the composite has thrown those bands
-        away before the frontend ever sees a pixel.
-
-        One field per sample, each from its own neighbourhood mean. Averaging
-        *across* samples would collapse the clicks to a single centroid, so a
-        new click would move the reference for everything and could drop pixels
-        an earlier click had selected -- measured at 43 of 45 regions.
-        Averaging *within* one click denoises it without any such reach: a
-        sample's field depends on that sample alone, which is what keeps a
-        later click provably additive.
-
-        The distance is the RMS difference per band rather than a plain
-        Euclidean norm, so one tolerance value means the same thing whether a
-        project has 4 bands or 12 -- otherwise the number would silently
-        rescale with band count.
-
-        Cached per (point, sample_size), so adding a click costs one new field
-        and dragging the tolerance slider costs none.
-        """
-        if self._wand_cache is None or self._wand_cache[0] != self._image_name:
-            self._wand_cache = (self._image_name, {})
-        cache = self._wand_cache[1]
-
-        stack = self._image.normalized  # (C, H, W) float32 in [0, 1]
-        _, height, width = stack.shape
-        fields = []
-        for sx, sy in samples:
-            x = min(width - 1, max(0, int(sx)))
-            y = min(height - 1, max(0, int(sy)))
-            key = (y, x, sample_size)
-            field = cache.get(key)
-            if field is None:
-                ref = self._sample_colour(y, x, sample_size)
-                diff = stack - ref[:, None, None]
-                field = np.sqrt(np.mean(diff * diff, axis=0))
-                cache[key] = field
-            fields.append(((y, x), field))
-        return fields
-
-    @staticmethod
-    def _grow_within_budget(within, seeds, budget):
-        """Union of a breadth-first growth from each seed, `budget` px apiece.
-
-        One BFS per seed rather than one shared queue over all of them. A
-        shared queue looks equivalent and is not: it hands pixels out in
-        proportion to each region's frontier, so a fast-spreading region eats
-        the allowance of a slower one and adding a sample visibly shrinks what
-        the earlier samples had selected. Independent budgets make that
-        impossible -- an existing selection cannot lose pixels because a new
-        click appeared somewhere else.
-
-        Breadth-first is what makes a budget meaningful: pixels arrive in order
-        of their distance *through* the region, so spending it yields the
-        innermost `budget` pixels around each sample. Taking the nearest N by
-        straight-line distance would happily return two halves of a horseshoe
-        with the middle missing.
-
-        Cost is O(seeds * budget), and it only runs when the region actually
-        exceeds the cap.
-        """
-        height, width = within.shape
-        passable = within.reshape(-1)
-        mask = np.zeros(height * width, dtype=bool)
-
-        for sy, sx in seeds:
-            start = sy * width + sx
-            seen = {start}
-            queue = deque((start,))
-            count = 1
-            mask[start] = True
-            while queue and count < budget:
-                idx = queue.popleft()
-                y, x = divmod(idx, width)
-                neighbours = ()
-                if x > 0:
-                    neighbours += (idx - 1,)
-                if x < width - 1:
-                    neighbours += (idx + 1,)
-                if y > 0:
-                    neighbours += (idx - width,)
-                if y < height - 1:
-                    neighbours += (idx + width,)
-                for n in neighbours:
-                    # `seen` is per-seed: a pixel another seed already took
-                    # must still be walked through, or this seed's growth would
-                    # stop dead at the boundary of an earlier one's territory.
-                    if n in seen or not passable[n]:
-                        continue
-                    seen.add(n)
-                    mask[n] = True
-                    queue.append(n)
-                    count += 1
-                    if count >= budget:
-                        break
-
-        return mask.reshape(height, width), int(mask.sum())
-
-    @staticmethod
-    def _nearest_within_budget(region, seed, budget):
-        """The `budget` pixels of `region` closest to `seed`, straight-line.
-
-        Global mode's counterpart to the breadth-first walk. With connectivity
-        dropped there is no path through the region to measure along, so
-        distance falls back to the plain radial one -- which is also what
-        "nearest the click" means to someone looking at the screen.
-        """
-        ys, xs = np.nonzero(region)
-        if len(ys) <= budget:
-            return region
-        sy, sx = seed
-        d2 = (ys - sy) ** 2 + (xs - sx) ** 2
-        keep = np.argpartition(d2, budget)[:budget]
-        out = np.zeros_like(region)
-        out[ys[keep], xs[keep]] = True
-        return out
-
     def wand_select(self, samples, options=None):
-        """Connected selection around `samples`, over all bands.
+        """Selection around `samples`, bit-packed for the wire.
 
-        samples: [[x, y], ...] in image pixel coordinates.
+        samples: [[x, y], ...] in image pixel coordinates. `options` is one
+        object rather than a growing positional list, so the JS side stays
+        readable and a new knob is one key instead of another argument nobody
+        can remember the order of; wand.parse_options documents every key.
 
-        options is one object rather than a growing positional list, so the JS
-        side stays readable and a new knob is one key instead of another
-        argument nobody can remember the order of:
+        The algorithm lives in wand.py. What happens here is the translation
+        this side of the bridge owns: the image and the label buffer go in, a
+        WandError comes back as a message the pane can show, and the mask goes
+        out bit-packed -- 32 KB for a 512x512 image rather than the 256 KB a
+        byte-per-pixel buffer would cost on every slider step.
 
-          tolerance    spectral distance, in the same units as the normalized
-                       bands (an RMS per-band difference). Required.
-          max_pixels   budget on the selection size, PER SAMPLE. None (the
-                       default) means unbounded. When a sample's region is
-                       larger, it grows breadth-first from that sample and
-                       stops once its budget is spent, keeping the innermost
-                       pixels around it. Per sample, not pooled: a shared
-                       budget divides among them, so every new click would
-                       shrink what the earlier ones had selected.
-          sample_size  how many pixels around each click to average into that
-                       sample's reference colour, 1..MAX_SAMPLE_PIXELS,
-                       nearest first. Defaults to 1.
-          negatives    [[x, y], ...] of clicks marking material to exclude. A
-                       pixel stays only while it is closer to its own positive
-                       sample than to every negative -- a nearest-neighbour
-                       rule, so one right-click on the material a fill is
-                       bleeding into removes it wherever it appears rather
-                       than only where it was clicked. That reach is what
-                       global mode needs, where a bleed can be hundreds of
-                       scattered fragments.
-          global       when true, drop the connectivity bound: a sample's
-                       region becomes every matching pixel in the scene rather
-                       than the connected piece under it. These classes are
-                       split into dozens of fragments (Forest in 00.tiff is
-                       63), so one click can take them all. The budget still
-                       applies, spending nearest-first.
-          protect      when true, drop pixels that already carry a label, so a
-                       fill can only ever add to unlabeled ground. Applied here
-                       rather than at commit time so the mask, the reported
-                       count and what actually gets painted are one object
-                       instead of three that can disagree. The caller decides
-                       when it applies -- notably it must NOT while erasing,
-                       since the eraser only ever acts on labeled pixels.
-
-        Returns the mask bit-packed and base64'd -- 32 KB for a 512x512 image
-        rather than the 256 KB a byte-per-pixel buffer would cost on every
-        slider step. `available` reports what the selection would have been
-        without the budget, so the UI can say how hard the cap is biting.
+        `available` reports what the selection would have been without the
+        budget, so the UI can say how hard the cap is biting.
         """
+        # Ahead of parse_options, so a click with no image open says so rather
+        # than reporting whichever option it also dislikes. Wand.select guards
+        # this too, for callers that reach it directly.
         if self._image is None:
             return {"ok": False, "error": "No image loaded"}
-        options = options or {}
-        points = [(float(p[0]), float(p[1])) for p in (samples or [])]
-        if not points:
-            return {"ok": False, "error": "No sample points"}
         try:
-            tol = float(options.get("tolerance"))
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "Invalid tolerance"}
-        try:
-            size = int(options.get("sample_size", 1))
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "Invalid sample size"}
-        size = min(MAX_SAMPLE_PIXELS, max(1, size))
-        budget = None
-        max_pixels = options.get("max_pixels")
-        if max_pixels is not None:
-            try:
-                budget = int(max_pixels)
-            except (TypeError, ValueError):
-                return {"ok": False, "error": "Invalid pixel budget"}
-            if budget <= 0:
-                return {"ok": False, "error": "Pixel budget must be positive"}
-
-        valid = self._image.valid_mask
-        height, width = valid.shape
-        mask = np.zeros((height, width), dtype=bool)
-        uncapped = np.zeros((height, width), dtype=bool)
-        capped = False
-
-        # Each sample is resolved on its own: its own match set, its own
-        # connected region, its own budget. Nothing about one sample can reach
-        # another, which is what makes a later click purely additive.
-        everywhere = bool(options.get("global"))
-
-        # Distance to the nearest excluded colour. A pixel survives only while
-        # its own sample is a better match than any of these.
-        negatives = [(float(p[0]), float(p[1]))
-                     for p in (options.get("negatives") or [])]
-        against = None
-        for _, neg_field in self._wand_fields(negatives, size):
-            against = neg_field if against is None else np.minimum(against, neg_field)
-
-        for (y, x), field in self._wand_fields(points, size):
-            within = (field <= tol) & valid
-            if against is not None:
-                within &= field < against
-            # The sample joins its own region whether or not it passes its own
-            # threshold, so a click is never a no-op.
-            within[y, x] = True
-
-            if everywhere:
-                region = within
-            else:
-                # 4-connected: with 8, regions touching at a single diagonal
-                # pixel merge and the selection leaks through gaps too narrow
-                # to see.
-                labelled, _ = ndimage.label(within, structure=_WAND_CONNECTIVITY)
-                region = labelled == labelled[y, x]
-            uncapped |= region
-
-            if budget is not None and int(region.sum()) > budget:
-                if everywhere:
-                    region = self._nearest_within_budget(region, (y, x), budget)
-                else:
-                    region, _ = self._grow_within_budget(region, [(y, x)], budget)
-                capped = True
-            mask |= region
-
-        available = int(uncapped.sum())
-
-        # Protection is applied to the finished selection rather than to the
-        # match set: a labeled pixel should still conduct the fill through
-        # itself, it just does not get painted. Masking earlier would sever
-        # regions at the first labeled pixel they touch.
-        protected = 0
-        if options.get("protect") and self._labels is not None:
-            keep = self._labels == UNLABELED
-            protected = int((mask & ~keep).sum())
-            mask = mask & keep
-
-        packed = np.packbits(mask.reshape(-1))
+            options = parse_options(options)
+            # Cheap when the key is unchanged, which is what lets this be
+            # unconditional: there is no invalidation hook here to forget.
+            self._wand.set_image(self._image, self._sam_image_key(),
+                                 self._display_bands())
+            if options.source == "sam":
+                reason = self._sam.unavailable_reason()
+                if reason is not None:
+                    raise WandError(reason)
+            result = self._wand.select(samples, options, self._labels)
+        except WandError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:  # a model/runtime error must not crash the bridge
+            traceback.print_exc()
+            return {"ok": False, "error": f"Wand failed: {e}"}
+        packed = np.packbits(result.mask.reshape(-1))
         return {"ok": True,
                 "mask": base64.b64encode(packed.tobytes()).decode("ascii"),
-                "count": int(mask.sum()),
-                "available": available,
-                "protected": protected,
-                "capped": capped,
-                "valid": int(self._image.valid_mask.sum()),
-                "width": width, "height": height}
+                "count": result.count,
+                "available": result.available,
+                "protected": result.protected,
+                "capped": result.capped,
+                "valid": result.valid,
+                "width": result.width, "height": result.height}
 
     # ---------- SAM2 snap-to-edge assist ----------
 
@@ -446,6 +208,109 @@ class Api:
         return {"ok": True, "polygons": polygons, "score": score}
 
 
+    # ---------- classes ----------
+
+    def _iter_label_masks(self):
+        """(name, labels, on_disk) for every image of the project.
+
+        The freshest copy of each: this session's edits if there are any, the
+        saved mask otherwise. Which matters for both callers below -- a class
+        the user painted two minutes ago and has not saved is still in use, and
+        deleting it has to clear those pixels too, not just the ones on disk.
+        """
+        if self._project is None:
+            return
+        for name in self._project.list_images():
+            labels = self._dirty_labels.get(name)
+            if labels is None and name == self._image_name:
+                labels = self._labels
+            if labels is not None:
+                yield name, labels, False
+                continue
+            saved = read_label_mask(self._project.mask_paths(name)[0])
+            if saved is not None:
+                yield name, saved, True
+
+    def class_usage(self, ids):
+        """{id: {pixels, images}} for class ids across the whole project.
+
+        Read-only, and the reason the settings dialog can warn before it
+        removes anything: "this deletes 12,345 px across 7 images" is a
+        different decision from "this deletes a row from a list".
+
+        One mask read per image, so it runs for a second or two on a large
+        project -- called when a row is removed, not on every keystroke.
+        """
+        if self._project is None:
+            return {"ok": False, "error": "No project open"}
+        try:
+            wanted = [int(i) for i in (ids or [])]
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Invalid class ids"}
+        usage = {i: {"pixels": 0, "images": 0} for i in wanted}
+        if wanted:
+            for _, labels, _ in self._iter_label_masks():
+                for i in wanted:
+                    hit = int((labels == i).sum())
+                    if hit:
+                        usage[i]["pixels"] += hit
+                        usage[i]["images"] += 1
+        # JSON object keys are strings on the way through the bridge; make that
+        # explicit here rather than leaving the frontend to guess.
+        return {"ok": True, "usage": {str(i): v for i, v in usage.items()}}
+
+    def _mask_geometry(self, name):
+        """(crs, transform) to write `name`'s mask back with.
+
+        Preferring the mask already on disk over the image keeps a rewrite
+        byte-identical in georeferencing to what was there, even if the two
+        ever disagree.
+        """
+        if name == self._image_name and self._image is not None:
+            return self._image.crs, self._image.transform
+        if name in self._dirty_geo:
+            return self._dirty_geo[name]
+        user_path, _ = self._project.mask_paths(name)
+        for path in (user_path, self._project.image_path(name)):
+            try:
+                with rasterio.open(path) as src:
+                    return src.crs, src.transform
+            except Exception:
+                continue
+        return None, None
+
+    def _unlabel_classes(self, ids):
+        """Reset every pixel of `ids` to UNLABELED across the user masks.
+
+        Deleting a class from the config without this would leave masks storing
+        an id nothing explains: it would read back as a class that is not in
+        the palette, paint as an unknown colour, and quietly train as a
+        category the model was never told about.
+
+        In-memory buffers are edited in place *and* written out, so the copy on
+        disk and the one being labeled cannot disagree about a class that no
+        longer exists. masks_ai is deliberately untouched -- this build never
+        reads it and the training app owns it.
+        """
+        removed = np.array(sorted(set(int(i) for i in ids)), dtype=np.uint8)
+        pixels = images = 0
+        for name, labels, _ in list(self._iter_label_masks()):
+            hit = np.isin(labels, removed)
+            count = int(hit.sum())
+            if not count:
+                continue
+            labels[hit] = UNLABELED  # in place: this may be the live buffer
+            crs, transform = self._mask_geometry(name)
+            write_label_mask(self._project.mask_paths(name)[0], labels, crs,
+                             transform, self._project.mask_format)
+            pixels += count
+            images += 1
+            if name == self._image_name:
+                self._note_label_count(name)
+            else:
+                self._label_counts[name] = self._mask_stats(labels)
+        return {"pixels": pixels, "images": images}
+
     # ---------- project ----------
 
     def new_project(self):
@@ -473,6 +338,7 @@ class Api:
                     "images_folder": config["paths"]["images_folder"],
                     "masks_user": config["paths"]["masks_user"],
                     "bands_detected": channels is not None,
+                    **_class_defaults(config),
                 }}
 
     def new_project_from_geotiff(self):
@@ -512,6 +378,7 @@ class Api:
                     "images_folder": "images",
                     "masks_user": config["paths"]["masks_user"],
                     "bands_detected": True,
+                    **_class_defaults(config),
                     "output_root": self._suggest_project_dir(source, stem),
                     "tile_width": tile,
                     "tile_height": tile,
@@ -669,10 +536,18 @@ class Api:
     def update_settings(self, settings):
         """Apply edited settings to the open project's config and persist them.
 
-        Only the project name, band names, class colors, display bands and
+        The project name, the class palette, band names, display bands and
         folder paths are editable here. Changing a folder path reopens the
         project so the new folders take effect (mask dirs are created and
         images reload).
+
+        Removing a class rewrites the saved masks: every pixel of a removed id
+        becomes unlabeled, project-wide, before the new config is written. That
+        is destructive and irreversible, which is why class_usage() exists for
+        the dialog to warn with first -- but the alternative is masks storing
+        ids the palette cannot explain, and a config that lies about its own
+        label space is worse than a deletion the user asked for and saw
+        measured.
 
         This build shares project_config.json with the full training app, and
         config_from_settings rebuilds the dict from scratch -- so anything not
@@ -689,24 +564,10 @@ class Api:
         merged["input_channels"] = profile["input_channels"]
         merged["input_patch_size"] = profile["input_patch_size"][0]
         try:
-            config = config_from_settings(merged)
-            # config_from_settings resets the palette to the defaults; keep the
-            # project's ids/names and only accept edited colors from the dialog
-            # (validated below by save_config -> validate_config).
-            new_classes = settings.get("classes")
-            by_id = {c["id"]: c for c in old["classes"]}
-            merged_classes = None
-            if isinstance(new_classes, list) and len(new_classes) == len(old["classes"]):
-                merged_classes = []
-                for nc in new_classes:
-                    if not isinstance(nc, dict) or nc.get("id") not in by_id:
-                        merged_classes = None
-                        break
-                    cls = dict(by_id[nc["id"]])
-                    if isinstance(nc.get("color"), str):
-                        cls["color"] = nc["color"]
-                    merged_classes.append(cls)
-            config["classes"] = merged_classes or [dict(c) for c in old["classes"]]
+            # The open project's label space goes in, so ids survive the
+            # rebuild and new rows take ids that have never been used.
+            config = config_from_settings(merged, existing_classes=old["classes"],
+                                          next_class_id=old.get("next_class_id"))
             # Carry over every top-level key this build does not manage (the
             # training split, mask_format, anything a sibling app added). A
             # generic copy rather than a named list, so a key introduced
@@ -719,19 +580,40 @@ class Api:
             for key in ("use_pointrend", "input_patch_size"):
                 if key in profile:
                     config["data_profile"][key] = profile[key]
+            # Masks first, config second. Both orders can fail badly and this
+            # one fails better: if the rewrite throws, the config still
+            # describes the palette the masks were written against, and the
+            # save can be retried. The reverse would leave a config whose label
+            # space the masks on disk contradict.
+            kept = {c["id"] for c in config["classes"]}
+            gone = [c["id"] for c in old["classes"] if c["id"] not in kept]
+            cleared = None
+            if gone:
+                with self._lock:
+                    cleared = self._unlabel_classes(gone)
             save_config(self._project.root, config)
         except (OSError, ValueError) as e:
             return {"ok": False, "error": str(e)}
         if config["paths"] != old["paths"]:
             result = self._init_project(self._project.root)
             result["reopened"] = True
+            result["cleared"] = cleared
             return result
         self._project.config = config
-        result = {"ok": True, "project": self.get_project()}
+        result = {"ok": True, "project": self.get_project(), "cleared": cleared}
+        if cleared and cleared["pixels"] and self._image is not None:
+            # The frontend is holding the labels this just edited. Without the
+            # refreshed buffer it would push its stale copy back on the next
+            # stroke and resurrect the pixels of a class that no longer exists.
+            result["image"] = self._image_payload()
         if config["data_profile"]["display_bands"] != profile.get("display_bands"):
             # New RGB mapping: re-render the open image (labels/geometry unchanged,
             # so the frontend swaps only the base png) and rebuild every cached
             # thumbnail, overwriting the old ones.
+            #
+            # The wand needs no hand-invalidation here: its cache key is
+            # _sam_image_key(), which carries the display bands, so the next
+            # request rebuilds by itself.
             if self._image is not None:
                 result["image"] = self._image_payload()
             self._project.start_thumbnail_generation(force=True)

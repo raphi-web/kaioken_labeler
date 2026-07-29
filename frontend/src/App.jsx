@@ -421,9 +421,19 @@ export default function App() {
         installProject(res)
       } else {
         setProject(res.project)
-        // Only the display bands changed: swap the base RGB, keep labels/view.
-        if (res.image) setImage((img) => (img ? { ...img, png: res.image.png } : img))
-        setMessage('Settings saved')
+        if (res.cleared?.pixels) {
+          // Removing a class rewrote the masks, including the buffer this pane
+          // is holding. Take the whole payload back, labels included -- keeping
+          // the local copy would push the deleted class's pixels straight back
+          // on the next stroke.
+          applyImagePayload(res.image)
+          setMessage(`Settings saved — unlabeled ${res.cleared.pixels.toLocaleString()} px `
+            + `across ${res.cleared.images} image${res.cleared.images === 1 ? '' : 's'}`)
+        } else {
+          // Only the display bands changed: swap the base RGB, keep labels/view.
+          if (res.image) setImage((img) => (img ? { ...img, png: res.image.png } : img))
+          setMessage('Settings saved')
+        }
       }
     } else {
       installProject(res)
@@ -483,7 +493,9 @@ export default function App() {
           onSamSnap={handleSamSnap}
           onWandSelect={handleWandSelect}
           classColors={classColors}
+          classes={classes}
           fitRef={fitRef}
+          samAvailable={samAvailable}
         />
       </div>
       <ThumbnailStrip

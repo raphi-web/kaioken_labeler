@@ -343,7 +343,9 @@ body {
    rather than a two-state toggle, so it stays visible instead of hiding in a
    dropdown. flex-shrink: 0 keeps it at full width when the panes squeeze. */
 .class-palette {
+  position: relative;
   flex: 0 0 auto;
+  /* Fallback only: the component owns the width so it can be dragged. */
   width: 168px;
   display: flex;
   flex-direction: column;
@@ -353,6 +355,26 @@ body {
      corner radii on adjacent panels read as a mistake. */
   border-radius: var(--r-lg);
   overflow: hidden;
+}
+
+/* Drag handle straddling the right border. Wider than the border itself so it
+   is grabbable, and invisible until hovered so it does not read as a divider. */
+.class-palette-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  /* Keep the drag from turning into a scroll/pan gesture. */
+  touch-action: none;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.class-palette-resizer:hover,
+.class-palette-resizer.dragging {
+  background: var(--accent);
 }
 
 .class-palette-title {
@@ -1092,6 +1114,89 @@ div.modal-error {
   gap: 5px;
   white-space: nowrap;
   cursor: pointer;
+}
+
+/* ---------- class editor (project setup) ---------- */
+
+.class-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* The palette can run to a dozen rows; keep the rest of the dialog reachable
+     instead of pushing the buttons off screen. */
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.class-preset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.class-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Fixed width so the swatches and names line up into columns, as in the
+   labeling palette. */
+.class-row-key {
+  flex: 0 0 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.class-row input[type='color'] {
+  flex: 0 0 28px;
+  height: 24px;
+  padding: 0;
+}
+
+.class-row input[type='text'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.class-row-remove {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  line-height: 1.1;
+}
+
+.class-add {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.class-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  cursor: pointer;
+}
+
+/* Wand-SAM's feature-level picker. Reuses the toolbar's segmented control so
+   the "one of these three" gesture looks the same wherever it appears, at the
+   smaller type of the controls row. */
+.wand-levels {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.wand-levels .segmented button {
+  padding: 2px 7px;
+  font-size: 11px;
 }
 
 .wand-toggle input {

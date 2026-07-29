@@ -2,9 +2,21 @@ export const UNLABELED = 255
 
 // Fallback palette for the no-project (standalone image) case; an open
 // project's own classes (from get_project) take precedence everywhere else.
+// Mirrors project.CLASS_PRESETS['sentinel2'], which is what a new project is
+// created with -- a standalone image opened for a quick look should not show a
+// different label space from the one it would get as a project.
 export const CLASSES = [
-  { id: 0, name: 'Target', color: '#ff5028' },
-  { id: 1, name: 'Background', color: '#3c8cff' },
+  { id: 0, name: 'Urban', color: '#e05a4f' },
+  { id: 1, name: 'Road', color: '#4a4a55' },
+  { id: 2, name: 'Agriculture-Green', color: '#3ddc6b' },
+  { id: 3, name: 'Raw-Earth/Agriculture', color: '#c98f3c' },
+  { id: 4, name: 'Meadow', color: '#d4e34a' },
+  { id: 5, name: 'Forest', color: '#14562b' },
+  { id: 6, name: 'Shrub', color: '#9ac48d' },
+  { id: 7, name: 'Water', color: '#2f7ce0' },
+  { id: 8, name: 'Snow', color: '#eef2f7' },
+  { id: 9, name: 'Wetland', color: '#9b5fd0' },
+  { id: 10, name: 'Synthetic Nodata', color: '#ff2fd0' },
 ]
 
 export function hexToRgb(hex) {
