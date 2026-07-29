@@ -1,0 +1,186 @@
+<!doctype html>
+<html>
+  <head><meta charset="UTF-8" /><title>smoke</title></head>
+  <body>
+    <div id="root"></div>
+    <pre id="result">running</pre>
+    <script>
+      // A stand-in for the pywebview bridge, so the real app can be driven in a
+      // plain browser. Records what the frontend asked for, which is the part
+      // worth asserting on.
+      const W = 16, H = 16
+      window.W_ = W; window.H_ = H
+      const b64 = (bytes) => btoa(String.fromCharCode.apply(null, bytes))
+      const calls = []
+      window.__calls = calls
+      const labels = new Uint8Array(W * H).fill(255)
+      // A selection: the 4x4 block at (2,2), bit-packed row-major like the backend.
+      const mask = new Uint8Array(W * H)
+      for (let y = 2; y < 6; y++) for (let x = 2; x < 6; x++) mask[y * W + x] = 1
+      const packed = new Uint8Array(W * H / 8)
+      for (let i = 0; i < mask.length; i++) {
+        if (mask[i]) packed[i >> 3] |= 128 >> (i & 7)
+      }
+      const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+      window.pywebview = {
+        api: new Proxy({}, {
+          get: (_, method) => (...args) => {
+            calls.push({ method, args })
+            switch (method) {
+              case 'get_image':
+                return Promise.resolve({ name: 't.tif', png: PNG, width: W, height: H,
+                                         labels: b64(labels), labeled_pixels: 0 })
+              case 'sam_available': return Promise.resolve({ available: true })
+              case 'wand_select':
+                return Promise.resolve({ ok: true, mask: b64(packed), count: 16,
+                                         available: 16, protected: 0, capped: false,
+                                         valid: W * H, width: W, height: H })
+              case 'set_labels': return Promise.resolve({ labeled_pixels: 16 })
+              default: return Promise.resolve({ ok: true })
+            }
+          },
+        }),
+      }
+      window.dispatchEvent(new Event('pywebviewready'))
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+    <script type="module">
+      const out = []
+      const ok = (name, cond, extra = '') =>
+        out.push(`${cond ? 'ok  ' : 'FAIL'} ${name}${extra ? '  ' + extra : ''}`)
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const byText = (sel, text) =>
+        [...document.querySelectorAll(sel)].find((e) => e.textContent.trim() === text)
+      const lastCall = (m) => [...window.__calls].reverse().find((c) => c.method === m)
+
+      window.addEventListener('error', (e) => out.push('FAIL uncaught: ' + e.message))
+
+      await sleep(1200)
+      try {
+        ok('app mounts', !!document.querySelector('.toolbar'))
+        ok('class palette renders 11 classes',
+           document.querySelectorAll('.class-item').length === 12) // 11 + eraser
+
+        // --- switch to the wand ---
+        byText('.segmented button', 'Wand').click()
+        await sleep(150)
+        const controls = document.querySelector('.wand-controls')
+        ok('wand controls mount', !!controls)
+        ok('three sliders + two toggles',
+           controls?.querySelectorAll('input[type=range]').length === 3
+           && controls?.querySelectorAll('input[type=checkbox]').length === 3)
+        ok('preview canvas mounts', !!document.querySelector('canvas.wand-preview'))
+
+        // --- a click must reach the backend with the right options ---
+        const canvas = document.querySelectorAll('.viewport canvas')[0]
+           || document.querySelector('canvas')
+        const r = canvas.getBoundingClientRect()
+        const click = (button = 0) => canvas.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true, button, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+        }))
+        click()
+        await sleep(250)
+        const c1 = lastCall('wand_select')
+        ok('click calls wand_select', !!c1)
+        const o1 = c1?.args[1] ?? {}
+        ok('spectral source by default', o1.source === 'image', JSON.stringify(o1.source))
+        ok('tolerance is the class seed / 200', o1.tolerance === 38 / 200,
+           String(o1.tolerance))   // class 0 = Urban -> seed 38
+        ok('sample_size default 9', o1.sample_size === 9, String(o1.sample_size))
+        ok('budget unlimited by default', o1.max_pixels === null, String(o1.max_pixels))
+        ok('protect on by default', o1.protect === true, String(o1.protect))
+        ok('global off by default', o1.global === false, String(o1.global))
+
+        // --- the preview actually painted ---
+        const pv = document.querySelector('canvas.wand-preview')
+        const px = pv.getContext('2d').getImageData(0, 0, W_, H_).data
+        let painted = 0
+        for (let i = 3; i < px.length; i += 4) if (px[i] > 0) painted++
+        ok('preview canvas has pixels', painted > 0, painted + ' px')
+
+        // --- readout ---
+        const hint = document.querySelector('.pane-title .hint')
+        ok('readout shows the count', /16 px/.test(hint?.textContent ?? ''),
+           JSON.stringify(hint?.textContent?.slice(0, 60)))
+
+        // --- tolerance slider re-runs with the new value ---
+        const tol = controls.querySelectorAll('input[type=range]')[0]
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value').set
+        setter.call(tol, '60')
+        tol.dispatchEvent(new Event('input', { bubbles: true }))
+        await sleep(250)
+        ok('slider re-runs with new tolerance',
+           lastCall('wand_select')?.args[1].tolerance === 60 / 200,
+           String(lastCall('wand_select')?.args[1].tolerance))
+
+        // --- SAM features switches source and tolerance units ---
+        const samToggle = [...controls.querySelectorAll('.wand-toggle')]
+          .find((l) => l.textContent.includes('SAM features'))
+          .querySelector('input')
+        samToggle.click()
+        await sleep(250)
+        const o2 = lastCall('wand_select')?.args[1] ?? {}
+        ok('SAM source selected', o2.source === 'sam', String(o2.source))
+        ok('SAM tolerance mapping (50 -> 0.8)', Math.abs(o2.tolerance - 0.8) < 1e-9,
+           String(o2.tolerance))
+        ok('level defaults to fine', o2.level === 'fine', String(o2.level))
+        await sleep(50)
+        ok('level picker appears', !!document.querySelector('.wand-levels'))
+
+        // --- switching level re-runs, keeping the samples ---
+        byText('.wand-levels .segmented button', 'deep').click()
+        await sleep(250)
+        ok('level switch re-runs', lastCall('wand_select')?.args[1].level === 'deep',
+           String(lastCall('wand_select')?.args[1].level))
+
+        // back to spectral: the per-class tolerance must come back, not 60/200 * sam
+        samToggle.click()
+        await sleep(250)
+        ok('spectral tolerance restored on switch back',
+           lastCall('wand_select')?.args[1].tolerance === 60 / 200,
+           String(lastCall('wand_select')?.args[1].tolerance))
+
+        // --- changing class re-runs, because the tolerance travels with it ---
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true }))
+        await sleep(300)
+        ok('class switch re-runs with that class seed',
+           lastCall('wand_select')?.args[1].tolerance === 24 / 200,  // Road -> 24
+           String(lastCall('wand_select')?.args[1].tolerance))
+        // ...and the class we edited keeps its own value when we come back
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }))
+        await sleep(300)
+        ok('per-class tolerance is remembered',
+           lastCall('wand_select')?.args[1].tolerance === 60 / 200,
+           String(lastCall('wand_select')?.args[1].tolerance))
+
+        // --- Enter commits into the labels ---
+        const before = window.__calls.filter((c) => c.method === 'set_labels').length
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+        await sleep(700)
+        ok('Enter commits (labels pushed)',
+           window.__calls.filter((c) => c.method === 'set_labels').length > before)
+        ok('selection cleared after commit',
+           !document.querySelector('.pane-title .hint')?.textContent.includes('16 px'))
+
+        // --- leaving the tool drops a pending selection ---
+        click()
+        await sleep(250)
+        ok('a fresh click selects again',
+           document.querySelector('.pane-title .hint')?.textContent.includes('16 px'))
+        byText('.segmented button', 'Brush').click()
+        await sleep(200)
+        ok('leaving wand mode unmounts the controls',
+           !document.querySelector('.wand-controls'))
+        byText('.segmented button', 'Wand').click()
+        await sleep(250)
+        ok('coming back has no stale selection',
+           !document.querySelector('.pane-title .hint')?.textContent.includes('16 px'),
+           JSON.stringify(document.querySelector('.pane-title .hint')?.textContent?.slice(0, 40)))
+      } catch (e) {
+        out.push('FAIL threw: ' + (e && e.stack ? e.stack.split('\n')[0] : e))
+      }
+      document.getElementById('result').textContent = out.join('\n')
+    </script>
+  </body>
+</html>
