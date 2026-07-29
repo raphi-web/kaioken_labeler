@@ -394,6 +394,8 @@ body {
   gap: 1px;
 }
 
+/* The row. A div for a class (it holds the name button and the eye) and a
+   button for the eraser, which has nothing to hide -- both want this layout. */
 .class-item {
   display: flex;
   align-items: center;
@@ -407,6 +409,60 @@ body {
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+}
+
+/* Picks the class. Carries the row's layout so the key, swatch, name and count
+   line up into columns exactly as they did when the row itself was the button. */
+.class-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The visibility toggle. The SVGs are drawn in solid black, which would be
+   invisible on this palette, so they are used as a MASK and the colour comes
+   from background-color -- that way they follow the theme and can dim with
+   state, and the files stay exactly as they were drawn. */
+.class-eye {
+  flex: 0 0 15px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  background-color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0.5;
+  -webkit-mask: url('./assets/view.svg') center / contain no-repeat;
+  mask: url('./assets/view.svg') center / contain no-repeat;
+}
+
+.class-eye:hover {
+  background-color: var(--text);
+  opacity: 1;
+}
+
+/* Hidden: the struck-through eye, at full strength, so a glance down the
+   palette shows what is switched off. */
+.class-eye.off {
+  opacity: 1;
+  background-color: var(--text);
+  -webkit-mask-image: url('./assets/hide.svg');
+  mask-image: url('./assets/hide.svg');
+}
+
+/* The class itself reads as muted while its labels are not drawn. The count
+   stays at full strength -- those pixels are still there, still saved. */
+.class-item.hidden .class-swatch,
+.class-item.hidden .class-name {
+  opacity: 0.45;
 }
 
 .class-item:hover {

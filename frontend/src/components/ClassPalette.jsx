@@ -26,7 +26,10 @@ function useClassCounts(labels, labelsVersion) {
   }, [labels, labelsVersion])
 }
 
-export default function ClassPalette({ classes, tool, setTool, labels, labelsVersion }) {
+export default function ClassPalette({
+  classes, tool, setTool, onSelectClass, hiddenClasses, onToggleVisible,
+  labels, labelsVersion,
+}) {
   const counts = useClassCounts(labels, labelsVersion)
   const [width, setWidth] = useState(DEFAULT_WIDTH)
   const [dragging, setDragging] = useState(false)
@@ -62,20 +65,39 @@ export default function ClassPalette({ classes, tool, setTool, labels, labelsVer
         {classes.map((c, i) => {
           const active = !tool.eraser && tool.classId === c.id
           const count = counts.get(c.id) ?? 0
+          const hidden = !!hiddenClasses?.has(c.id)
+          // A row rather than a button, because it holds two of them: a button
+          // inside a button is invalid, and a click on the eye would select the
+          // class on its way up.
           return (
-            <button
+            <div
               key={c.id}
-              className={`class-item${active ? ' active' : ''}`}
-              onClick={() => setTool({ ...tool, classId: c.id, eraser: false })}
-              title={`${c.name} — ${count.toLocaleString()} px painted`}
+              className={`class-item${active ? ' active' : ''}${hidden ? ' hidden' : ''}`}
             >
-              <span className="class-key">{classKeyLabel(i)}</span>
-              <span className="class-swatch" style={{ background: c.color }} />
-              <span className="class-name">{c.name}</span>
-              <span className={`class-count${count ? '' : ' empty'}`}>
-                {count ? count.toLocaleString() : '0'}
-              </span>
-            </button>
+              <button
+                className="class-select"
+                onClick={() => onSelectClass(c.id)}
+                title={`${c.name} — ${count.toLocaleString()} px painted`}
+              >
+                <span className="class-key">{classKeyLabel(i)}</span>
+                <span className="class-swatch" style={{ background: c.color }} />
+                <span className="class-name">{c.name}</span>
+                <span className={`class-count${count ? '' : ' empty'}`}>
+                  {count ? count.toLocaleString() : '0'}
+                </span>
+              </button>
+              {/* Visibility is a view setting: the labels stay, they are just
+                  not drawn, so the imagery under them can be checked. */}
+              <button
+                className={`class-eye${hidden ? ' off' : ''}`}
+                aria-label={`${hidden ? 'Show' : 'Hide'} ${c.name}`}
+                aria-pressed={hidden}
+                title={hidden
+                  ? `${c.name} is hidden in the labeler — click to show it`
+                  : `Hide ${c.name} in the labeler (its labels are kept)`}
+                onClick={() => onToggleVisible(c.id)}
+              />
+            </div>
           )
         })}
         <button

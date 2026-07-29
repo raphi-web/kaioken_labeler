@@ -83,7 +83,8 @@ function makeCrosshairCursor(color) {
 // the app can undo it.
 export default function LabelerPane({
   image, labels, labelsVersion, tool, view, setView, onStrokeEnd, onDiff,
-  onSamSnap, onWandSelect, classColors, classes, fitRef, samAvailable,
+  onSamSnap, onWandSelect, classColors, classes, hiddenClasses, fitRef,
+  samAvailable,
 }) {
   const canvasRef = useRef(null)
   const [canvasReady, setCanvasReady] = useState(false)
@@ -154,7 +155,7 @@ export default function LabelerPane({
 
   useEffect(() => {
     if (image && canvasReady) redraw()
-  }, [image, labels, labelsVersion, canvasReady, opacity, classColors])
+  }, [image, labels, labelsVersion, canvasReady, opacity, classColors, hiddenClasses])
 
   // Leaving polygon mode discards an unfinished polygon.
   useEffect(() => {
@@ -210,6 +211,9 @@ export default function LabelerPane({
     const imgData = ctx.createImageData(width, height)
     for (let i = 0; i < labels.length; i++) {
       const v = labels[i]
+      // A hidden class is skipped exactly like an unknown one: the pixel keeps
+      // its label everywhere else -- on disk, in the counts, to every tool --
+      // it is only not drawn.
       if (!(v in classColors)) continue
       const [r, g, b] = classColors[v]
       const o = i * 4

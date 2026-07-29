@@ -48,6 +48,33 @@ export default function App() {
   // The open project's own class palette (colors editable in Settings), or the
   // standalone-image default when no project is open. Declared up here because
   // the class-shortcut effect below lists it as a dependency.
+  // Classes hidden from the overlay. A view setting, not part of the project:
+  // the labels stay on disk, keep their counts and are still seen by every
+  // tool -- they are simply not drawn, so you can look at the imagery under
+  // them. Session-only, and deliberately not written to project_config.json,
+  // which is shared with the training app.
+  const [hiddenClasses, setHiddenClasses] = useState(() => new Set())
+
+  function toggleClassVisible(id) {
+    setHiddenClasses((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
+  }
+
+  // Every path that picks a class goes through here -- the palette and the
+  // number keys -- so neither can leave you painting into something invisible.
+  function selectClass(id) {
+    setHiddenClasses((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+    setTool((t) => ({ ...t, classId: id, eraser: false }))
+  }
+
   const classes = project?.classes ?? CLASSES
   const classColors = Object.fromEntries(classes.map((c) => [c.id, hexToRgb(c.color)]))
 
@@ -223,6 +250,11 @@ export default function App() {
   // eraser. Held separately from the undo handler because it depends on the
   // live class list and tool, and must stay out of the way while a modal or a
   // text field has the user's typing.
+  // The class-key listener is registered per class list, but selectClass is a
+  // fresh closure each render; a ref keeps the listener on the current one.
+  const selectRef = useRef(selectClass)
+  selectRef.current = selectClass
+
   useEffect(() => {
     function onKey(e) {
       if (e.ctrlKey || e.metaKey || e.altKey) return
@@ -237,7 +269,7 @@ export default function App() {
       const id = classIdForKey(e.key, classes)
       if (id !== null) {
         e.preventDefault()
-        setTool((t) => ({ ...t, classId: id, eraser: false }))
+        selectRef.current(id)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -478,6 +510,9 @@ export default function App() {
           classes={classes}
           tool={tool}
           setTool={setTool}
+          onSelectClass={selectClass}
+          hiddenClasses={hiddenClasses}
+          onToggleVisible={toggleClassVisible}
           labels={labelsRef.current}
           labelsVersion={labelsVersion}
         />
@@ -494,6 +529,7 @@ export default function App() {
           onWandSelect={handleWandSelect}
           classColors={classColors}
           classes={classes}
+          hiddenClasses={hiddenClasses}
           fitRef={fitRef}
           samAvailable={samAvailable}
         />

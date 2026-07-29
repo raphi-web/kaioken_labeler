@@ -61,6 +61,8 @@ const undoButton = () => screen.getByRole('button', { name: 'Undo' })
 const redoButton = () => screen.getByRole('button', { name: 'Redo' })
 const labeledCount = () => document.querySelector('.stat-value').textContent
 const clearButton = () => screen.getByRole('button', { name: 'Clear Labels' })
+const paletteRow = (name) => [...document.querySelectorAll('.class-item')]
+  .find((r) => r.textContent.includes(name))
 
 /** The label buffer as the app last sent it. */
 const latest = () => pushed.at(-1)
@@ -161,6 +163,39 @@ describe('class selection', () => {
     await waitFor(() => expect(active()).toContain('Road'))
     fireEvent.keyDown(window, { key: 'e' })
     await waitFor(() => expect(active()).toContain('Eraser'))
+  })
+
+  it('hiding a class changes no pixel and no count', async () => {
+    // The whole contract of the toggle: it is a view setting. Nothing about
+    // the labels, what is saved, or what the palette counts may move.
+    await mount()
+    const countBefore = labeledCount()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Urban' }))
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Show Urban' })).toBeTruthy())
+    expect(labeledCount()).toBe(countBefore)
+    expect(pushed).toHaveLength(0)      // nothing was written back
+    // The seeded pixels are class 3, whichever name the palette gives it.
+    const painted = paletteRow('Raw-Earth')
+    expect(painted.querySelector('.class-count').textContent)
+      .toBe(PAINTED.toLocaleString())
+  })
+
+  it('picking a hidden class shows it again, from the palette and the keyboard', async () => {
+    // You cannot paint what you cannot see, so selecting has to bring it back.
+    await mount()
+    const eye = (name) => screen.queryByRole('button', { name })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Urban' }))
+    await waitFor(() => expect(eye('Show Urban')).toBeTruthy())
+    fireEvent.click(paletteRow('Urban').querySelector('.class-select'))
+    await waitFor(() => expect(eye('Hide Urban')).toBeTruthy())
+
+    // ... and via the number key, which goes through the same path.
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Road' }))
+    await waitFor(() => expect(eye('Show Road')).toBeTruthy())
+    fireEvent.keyDown(window, { key: '2' })
+    await waitFor(() => expect(eye('Hide Road')).toBeTruthy())
   })
 
   it('ignores class keys while a modifier is held, so Ctrl+Y is not class 9', async () => {

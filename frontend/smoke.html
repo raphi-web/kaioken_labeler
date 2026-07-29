@@ -256,6 +256,47 @@
         ok('one undo restores all nine in a single step',
            stat() === regionBefore, `${stat()} vs ${regionBefore}`)
 
+        // --- per-class visibility: the labels stay, they are not drawn ---
+        const drawn = () => {
+          const d = canvas.getContext('2d').getImageData(0, 0, W_, H_).data
+          let n = 0
+          for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++
+          return n
+        }
+        const eyeFor = (name) => [...document.querySelectorAll('.class-eye')]
+          .find((b) => b.getAttribute('aria-label') === name)
+        const drawnBefore = drawn()
+        const labeledBefore = stat()
+        ok('the overlay draws every labeled pixel', drawnBefore === labeledBefore,
+           `${drawnBefore} drawn vs ${labeledBefore} labeled`)
+
+        eyeFor('Hide Raw-Earth/Agriculture').click()
+        await sleep(250)
+        ok('hiding a class removes exactly its pixels from the overlay',
+           drawn() === drawnBefore - 10, `${drawnBefore} -> ${drawn()}`)
+        ok('but the labels are untouched', stat() === labeledBefore,
+           `${stat()} vs ${labeledBefore}`)
+        ok('and its painted count still shows', (() => {
+          const row = [...document.querySelectorAll('.class-item')]
+            .find((r) => r.textContent.includes('Raw-Earth'))
+          return row.querySelector('.class-count').textContent === '10'
+        })())
+
+        eyeFor('Show Raw-Earth/Agriculture').click()
+        await sleep(250)
+        ok('showing it again restores the overlay', drawn() === drawnBefore,
+           `${drawn()} vs ${drawnBefore}`)
+
+        // Picking a hidden class has to bring it back, or you paint into nothing.
+        eyeFor('Hide Urban').click()
+        await sleep(200)
+        ok('a class can be hidden', !!eyeFor('Show Urban'))
+        ;[...document.querySelectorAll('.class-item')]
+          .find((r) => r.textContent.includes('Urban'))
+          .querySelector('.class-select').click()
+        await sleep(250)
+        ok('picking a hidden class shows it again', !!eyeFor('Hide Urban'))
+
         // --- the class editor in the create dialog ---
         byText('.dropdown button', 'Project')?.click()
         await sleep(120)

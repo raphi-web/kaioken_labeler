@@ -78,6 +78,12 @@ there are no more keys. The palette shows a live painted-pixel count per class
 and highlights the ones still at zero, and its width is draggable by the right
 border (double-click resets it).
 
+Each class has an eye on its right that **hides it in the labeler**. Hiding is
+a view setting and nothing else: the labels stay on disk, keep their pixel
+count, and every tool still sees them — they are just not drawn, so you can
+look at the imagery underneath. Picking a hidden class shows it again, since
+painting into something invisible helps nobody.
+
 `Ctrl+Z` undoes, `Ctrl+Shift+Z` or `Ctrl+Y` redoes. Labels autosave a second
 after the last stroke, and again whenever you switch images, so the "Labeled"
 pixel count in the toolbar doubles as the "your work is on disk" readout.
