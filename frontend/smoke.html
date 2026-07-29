@@ -14,6 +14,10 @@
       const calls = []
       window.__calls = calls
       const labels = new Uint8Array(W * H).fill(255)
+      // A 3x3 object of class 3, plus a lone pixel of the same class elsewhere:
+      // deleting the block must leave the loner alone.
+      for (let y = 8; y < 11; y++) for (let x = 8; x < 11; x++) labels[y * W + x] = 3
+      labels[0] = 3
       // A selection: the 4x4 block at (2,2), bit-packed row-major like the backend.
       const mask = new Uint8Array(W * H)
       for (let y = 2; y < 6; y++) for (let x = 2; x < 6; x++) mask[y * W + x] = 1
@@ -29,7 +33,7 @@
             switch (method) {
               case 'get_image':
                 return Promise.resolve({ name: 't.tif', png: PNG, width: W, height: H,
-                                         labels: b64(labels), labeled_pixels: 0 })
+                                         labels: b64(labels), labeled_pixels: 10 })
               case 'sam_available': return Promise.resolve({ available: true })
               case 'new_project':
                 return Promise.resolve({ ok: true, needs_setup: true, root: '/tmp/p',
@@ -50,19 +54,35 @@
                 return Promise.resolve({ ok: true, mask: b64(packed), count: 16,
                                          available: 16, protected: 0, capped: false,
                                          valid: W * H, width: W, height: H })
-              case 'set_labels': return Promise.resolve({ labeled_pixels: 16 })
+              case 'set_labels': {
+                const raw = atob(args[0])
+                let n = 0
+                for (let i = 0; i < raw.length; i++) if (raw.charCodeAt(i) !== 255) n++
+                return Promise.resolve({ labeled_pixels: n })
+              }
               default: return Promise.resolve({ ok: true })
             }
           },
         }),
       }
+      // Registered here, in a classic script, so that a SYNTAX error in the
+      // module below is still reported: a listener inside that module would
+      // never run, and the page would just sit there reading "running".
+      window.addEventListener('error', (e) => {
+        const el = document.getElementById('result')
+        el.textContent = `FAIL uncaught: ${e.message}`
+          + (e.filename ? ` (${e.filename}:${e.lineno})` : '')
+      })
       window.dispatchEvent(new Event('pywebviewready'))
     </script>
     <script type="module" src="/src/main.jsx"></script>
     <script type="module">
       const out = []
-      const ok = (name, cond, extra = '') =>
+      const flush = () => { document.getElementById('result').textContent = out.join('\n') }
+      const ok = (name, cond, extra = '') => {
         out.push(`${cond ? 'ok  ' : 'FAIL'} ${name}${extra ? '  ' + extra : ''}`)
+        flush()
+      }
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       const byText = (sel, text) =>
         [...document.querySelectorAll(sel)].find((e) => e.textContent.trim() === text)
@@ -192,6 +212,50 @@
         ok('coming back has no stale selection',
            !document.querySelector('.pane-title .hint')?.textContent.includes('16 px'),
            JSON.stringify(document.querySelector('.pane-title .hint')?.textContent?.slice(0, 40)))
+        // --- the Region tool: delete one connected object ---
+        byText('.segmented button', 'Region').click()
+        await sleep(200)
+        ok('region tool mounts a preview canvas',
+           document.querySelectorAll('canvas.wand-preview').length === 1)
+        const stat = () => Number(document.querySelector('.stat-value')
+          .textContent.replace(/[^0-9]/g, ''))
+        const regionBefore = stat()
+        ok('the seeded object is present', regionBefore >= 10, regionBefore + ' px labeled')
+
+        // Click inside the 3x3 block. The canvas is laid out by the Viewport,
+        // so go through its real geometry rather than guessing.
+        const rect = canvas.getBoundingClientRect()
+        const cell = rect.width / W_
+        const hit = (px, py) => canvas.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true, button: 0,
+          clientX: rect.left + (px + 0.5) * cell,
+          clientY: rect.top + (py + 0.5) * cell,
+        }))
+        hit(9, 9)
+        await sleep(200)
+        const regionHint = () => document.querySelector('.pane-title .hint')?.textContent ?? ''
+        ok('a click selects the connected object', /1 region · 9 px/.test(regionHint()),
+           regionHint().slice(0, 40))
+
+        const pv2 = document.querySelector('canvas.wand-preview')
+        let marked = 0
+        const pxs = pv2.getContext('2d').getImageData(0, 0, W_, H_).data
+        for (let i = 3; i < pxs.length; i += 4) if (pxs[i] > 0) marked++
+        ok('the selection is painted', marked > 0, marked + ' px')
+
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+        await sleep(400)
+        ok('Enter deletes exactly the nine pixels of that object',
+           stat() === regionBefore - 9, `${regionBefore} -> ${stat()}`)
+        ok('selection cleared after the delete', !/\d+ region/.test(regionHint()),
+           regionHint().slice(0, 40))
+
+        // Undo must bring the whole object back in one step.
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }))
+        await sleep(400)
+        ok('one undo restores all nine in a single step',
+           stat() === regionBefore, `${stat()} vs ${regionBefore}`)
+
         // --- the class editor in the create dialog ---
         byText('.dropdown button', 'Project')?.click()
         await sleep(120)
@@ -236,7 +300,7 @@
       } catch (e) {
         out.push('FAIL threw: ' + (e && e.stack ? e.stack.split('\n')[0] : e))
       }
-      document.getElementById('result').textContent = out.join('\n')
+      flush()
     </script>
   </body>
 </html>

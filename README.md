@@ -110,6 +110,13 @@ regions, so it is worth trying where a spectral fill will not converge. It costs
 one encoder pass per image and gives up the non-visible bands the wand normally
 uses, which is why it is a switch and not the default.
 
+**Region** deletes a labeled object. Click one and it selects the **connected
+region under the cursor** — not every pixel of that class, which matters here
+because a class comes in dozens of separate pieces. Click more objects to add
+them, `Backspace` drops the last, `Enter` or `Delete` erases them all as one
+undoable step, `Esc` cancels. It reads the label buffer directly, so unlike the
+wand there is no round trip and no tolerance to tune.
+
 **SAM2** snaps a polygon to an object's edges from a click; right-click excludes.
 
 ## Mask format

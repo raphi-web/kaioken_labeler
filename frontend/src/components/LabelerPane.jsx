@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LABEL_ALPHA, UNLABELED } from '../constants'
 import { WAND_WARN_FRACTION } from '../wand/constants'
+import { useRegionSelect } from '../region/useRegionSelect'
 import { useWand } from '../wand/useWand'
 import WandControls from '../wand/WandControls'
 import Viewport from './Viewport'
@@ -126,10 +127,21 @@ export default function LabelerPane({
     onSelect: onWandSelect,
     onCommit: (mask) => commitWandMask(mask),
   })
-  // The window-level key handler is registered once, so it reaches the wand
-  // through a ref rather than through a stale closure.
+  // Picking whole labeled objects and deleting them. Local to the frontend:
+  // the label buffer is already here, so no request is involved.
+  const region = useRegionSelect({
+    active: tool.mode === 'region',
+    image,
+    labels,
+    labelsVersion,
+    onDelete: (mask) => deleteRegionMask(mask),
+  })
+  // The window-level key handler is registered once, so it reaches both tools
+  // through refs rather than through a stale closure.
   const wandRef = useRef(wand)
   wandRef.current = wand
+  const regionRef = useRef(region)
+  regionRef.current = region
 
   // Callback ref: the canvas only mounts once the Viewport has a `view`
   // (see Viewport), which lands after image/labels are already set. Track the
@@ -166,6 +178,16 @@ export default function LabelerPane({
         else if (e.key === 'Backspace') {
           e.preventDefault() // otherwise the webview treats it as "go back"
           wandRef.current.undoSample()
+        }
+      } else if (mode === 'region') {
+        if (e.key === 'Enter') regionRef.current.commit()
+        else if (e.key === 'Escape') regionRef.current.cancel()
+        else if (e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault() // otherwise the webview treats it as "go back"
+          // Delete reads as "remove it now" here, and with a selection on
+          // screen that is what Enter does, so both keys point at it.
+          if (e.key === 'Delete') regionRef.current.commit()
+          else regionRef.current.undo()
         }
       } else if (mode === 'sam') {
         if (e.key === 'Enter') samCommitRef.current()
@@ -348,6 +370,20 @@ export default function LabelerPane({
   samUndoRef.current = samUndoPoint
   samCancelRef.current = samCancel
 
+  // Erase every selected region in one undoable step, so a mis-click costs one
+  // Ctrl+Z whether it took one object or ten.
+  function deleteRegionMask(mask) {
+    const diff = new Map()
+    for (let i = 0; i < mask.length; i++) {
+      if (mask[i]) paintPixel(diff, i, UNLABELED)
+    }
+    if (diff.size) {
+      onDiff(diff)
+      redraw()
+      onStrokeEnd()
+    }
+  }
+
   // Paint a finished wand selection into the label buffer as ONE undoable
   // diff, then push it. The wand hands over a mask and knows nothing about
   // labels, undo or autosave; this is where those live.
@@ -406,6 +442,10 @@ export default function LabelerPane({
       }
       return
     }
+    if (settings.current.mode === 'region') {
+      if (e.button === 0) region.addAt(canvasPos(e))
+      return
+    }
     if (settings.current.mode === 'sam') {
       // Left click includes, right click (or Ctrl/Alt+left) excludes. Right
       // click is the primary gesture because it needs no second hand; the
@@ -454,6 +494,7 @@ export default function LabelerPane({
   const polygonMode = tool.mode === 'polygon'
   const samMode = tool.mode === 'sam'
   const wandMode = tool.mode === 'wand'
+  const regionMode = tool.mode === 'region'
   // Whether the pending selection covers enough of the image to be worth
   // calling out before it is committed.
   const wandPct = (wand.fraction * 100).toFixed(1)
@@ -466,10 +507,11 @@ export default function LabelerPane({
   const cursorCss = useMemo(() => {
     if (samMode) return samBusy ? 'wait' : 'crosshair'
     if (wandMode) return wand.busy ? 'wait' : 'crosshair'
+    if (regionMode) return 'crosshair'
     if (polygonMode) return 'crosshair'
     const color = tool.eraser ? [255, 255, 255] : classColors[tool.classId]
     return makeBrushCursor(tool.brushSize * 2 * scale, color) ?? makeCrosshairCursor(color)
-  }, [tool.brushSize, scale, tool.eraser, tool.classId, polygonMode, samMode, wandMode, samBusy, wand.busy, classColors])
+  }, [tool.brushSize, scale, tool.eraser, tool.classId, polygonMode, samMode, wandMode, regionMode, samBusy, wand.busy, classColors])
 
   return (
     <div className="pane">
@@ -507,6 +549,16 @@ export default function LabelerPane({
                   ? ` · ${wand.protectedCount.toLocaleString()} protected · `
                   : ' · ')
                 + 'Backspace: drop last · Enter: fill · Esc: cancel'}
+          </span>
+        )}
+        {regionMode && (
+          <span className="hint">
+            {region.regions.length === 0
+              ? 'click a labeled object to select it — the connected region, not the whole class'
+              : `${region.regions.length} region`
+                + `${region.regions.length === 1 ? '' : 's'} · `
+                + `${region.count.toLocaleString()} px · `
+                + 'Backspace: drop last · Enter or Delete: erase · Esc: cancel'}
           </span>
         )}
         <span className="spacer" />
@@ -549,6 +601,14 @@ export default function LabelerPane({
         {wandMode && (
           <canvas
             ref={wand.canvasRef}
+            className="wand-preview"
+            width={image?.width}
+            height={image?.height}
+          />
+        )}
+        {regionMode && (
+          <canvas
+            ref={region.canvasRef}
             className="wand-preview"
             width={image?.width}
             height={image?.height}
@@ -649,7 +709,7 @@ export default function LabelerPane({
             })}
           </svg>
         )}
-        {!polygonMode && !samMode && !wandMode && oversized && (
+        {!polygonMode && !samMode && !wandMode && !regionMode && oversized && (
           <div
             ref={cursorRef}
             className="brush-cursor"

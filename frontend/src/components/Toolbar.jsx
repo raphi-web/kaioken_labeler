@@ -61,6 +61,13 @@ export default function Toolbar({
             Wand
           </button>
           <button
+            className={tool.mode === 'region' ? 'active' : ''}
+            title="Click a labeled object to select it, then Enter to delete it — the connected region under the cursor, not every pixel of its class"
+            onClick={() => setTool({ ...tool, mode: 'region' })}
+          >
+            Region
+          </button>
+          <button
             className={tool.mode === 'sam' ? 'active' : ''}
             disabled={!samAvailable}
             title={samAvailable
