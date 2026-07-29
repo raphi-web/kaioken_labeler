@@ -247,7 +247,11 @@ export default function LabelerPane({
   function stamp(x, y) {
     const { classId, brushSize, eraser } = settings.current
     const value = eraser ? UNLABELED : classId
-    const r = brushSize
+    // brushSize is the diameter, so a size of 1 is one pixel wide. The disc is
+    // measured to pixel centres (px + 0.5), not to the corner the index names:
+    // against corners a radius of 0.5 either catches the four pixels meeting at
+    // the cursor or none at all, depending on where the click lands.
+    const r = brushSize / 2
     const { width, height } = image
     const x0 = Math.max(0, Math.floor(x - r))
     const x1 = Math.min(width - 1, Math.ceil(x + r))
@@ -255,7 +259,7 @@ export default function LabelerPane({
     const y1 = Math.min(height - 1, Math.ceil(y + r))
     for (let py = y0; py <= y1; py++) {
       for (let px = x0; px <= x1; px++) {
-        if ((px - x) ** 2 + (py - y) ** 2 <= r * r) {
+        if ((px + 0.5 - x) ** 2 + (py + 0.5 - y) ** 2 <= r * r) {
           paintPixel(strokeDiff.current, py * width + px, value)
         }
       }
@@ -265,7 +269,9 @@ export default function LabelerPane({
   function strokeTo(pos) {
     const last = lastPos.current ?? pos
     const dist = Math.hypot(pos.x - last.x, pos.y - last.y)
-    const steps = Math.max(1, Math.ceil(dist / (settings.current.brushSize / 2)))
+    // Stamp every half-radius along the drag so the discs overlap into a solid
+    // stroke; brushSize is a diameter, so that spacing is a quarter of it.
+    const steps = Math.max(1, Math.ceil(dist / (settings.current.brushSize / 4)))
     for (let i = 1; i <= steps; i++) {
       stamp(last.x + ((pos.x - last.x) * i) / steps, last.y + ((pos.y - last.y) * i) / steps)
     }
@@ -507,14 +513,14 @@ export default function LabelerPane({
   // Brush cursor: draw it into a native CSS cursor (zero pointer lag) while it
   // fits the browser's 128px cap; beyond that, fall back to the DOM circle.
   const scale = view?.scale ?? 1
-  const oversized = Math.ceil(tool.brushSize * 2 * scale) + CURSOR_PAD * 2 > MAX_CURSOR_PX
+  const oversized = Math.ceil(tool.brushSize * scale) + CURSOR_PAD * 2 > MAX_CURSOR_PX
   const cursorCss = useMemo(() => {
     if (samMode) return samBusy ? 'wait' : 'crosshair'
     if (wandMode) return wand.busy ? 'wait' : 'crosshair'
     if (regionMode) return 'crosshair'
     if (polygonMode) return 'crosshair'
     const color = tool.eraser ? [255, 255, 255] : classColors[tool.classId]
-    return makeBrushCursor(tool.brushSize * 2 * scale, color) ?? makeCrosshairCursor(color)
+    return makeBrushCursor(tool.brushSize * scale, color) ?? makeCrosshairCursor(color)
   }, [tool.brushSize, scale, tool.eraser, tool.classId, polygonMode, samMode, wandMode, regionMode, samBusy, wand.busy, classColors])
 
   return (
@@ -718,10 +724,10 @@ export default function LabelerPane({
             ref={cursorRef}
             className="brush-cursor"
             style={{
-              width: tool.brushSize * 2 * scale,
-              height: tool.brushSize * 2 * scale,
-              marginLeft: -tool.brushSize * scale,
-              marginTop: -tool.brushSize * scale,
+              width: tool.brushSize * scale,
+              height: tool.brushSize * scale,
+              marginLeft: (-tool.brushSize * scale) / 2,
+              marginTop: (-tool.brushSize * scale) / 2,
               borderWidth: 1.5,
               borderColor: `rgba(${brushColor.join(',')}, 0.9)`,
               background: `rgba(${brushColor.join(',')}, 0.2)`,

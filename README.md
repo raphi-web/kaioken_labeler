@@ -93,8 +93,9 @@ the labels **in place**, so back them up outside version control.
 
 ## The tools
 
-**Brush** and **Polygon** are what they sound like; the brush radius is on the
-toolbar and also on the scroll wheel.
+**Brush** and **Polygon** are what they sound like; the brush width is on the
+toolbar and also on the scroll wheel. It is a diameter in image pixels, so 1
+paints a single pixel.
 
 **Wand** clicks a region and selects pixels of similar material around it,
 previewed until `Enter` paints it (`Esc` discards, `Backspace` drops the last

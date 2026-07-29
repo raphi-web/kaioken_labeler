@@ -117,7 +117,7 @@ export default function Toolbar({
           onChange={(e) => setBrush(e.target.value)}
           onWheel={handleBrushWheel}
         />
-        {/* Typing an exact radius, for when dragging the slider is fiddly. It
+        {/* Typing an exact width, for when dragging the slider is fiddly. It
             clamps to the slider's range so the two can never show different
             things; a blank or non-numeric entry leaves the size alone rather
             than snapping to 0. */}
@@ -130,7 +130,7 @@ export default function Toolbar({
           value={tool.brushSize}
           onChange={(e) => setBrush(e.target.value)}
           onWheel={handleBrushWheel}
-          title={`Brush radius in pixels (${BRUSH_MIN}-${BRUSH_MAX})`}
+          title={`Brush width in pixels (${BRUSH_MIN}-${BRUSH_MAX})`}
         />
         <span className="hint">px</span>
       </div>

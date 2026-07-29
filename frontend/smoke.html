@@ -90,6 +90,13 @@
 
       window.addEventListener('error', (e) => out.push('FAIL uncaught: ' + e.message))
 
+      // Pointer capture needs a live input device, so it throws on the synthetic
+      // events below and would abort the brush handler before it paints. Nothing
+      // asserted here depends on capture -- it only keeps a real drag alive once
+      // the cursor leaves the canvas.
+      Element.prototype.setPointerCapture = () => {}
+      Element.prototype.releasePointerCapture = () => {}
+
       await sleep(1200)
       try {
         ok('app mounts', !!document.querySelector('.toolbar'))
@@ -296,6 +303,52 @@
           .querySelector('.class-select').click()
         await sleep(250)
         ok('picking a hidden class shows it again', !!eyeFor('Hide Urban'))
+
+        // --- the brush size is a diameter, so 1 means one pixel ---
+        byText('.segmented button', 'Brush').click()
+        await sleep(150)
+        const setBrush = (n) => {
+          const box = document.querySelector('input.brush-size')
+          const set = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value').set
+          set.call(box, String(n))
+          box.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+        // A brush stroke only reaches the label count on pointerup, so a dab is
+        // the full press-and-release rather than the bare pointerdown above.
+        // The geometry is measured per dab: leaving the region tool unmounts its
+        // preview and moves the canvas, so the rect captured above is stale here.
+        const dab = (px, py) => {
+          const r2 = canvas.getBoundingClientRect()
+          const at = (type) => canvas.dispatchEvent(new PointerEvent(type, {
+            bubbles: true, button: 0,
+            clientX: r2.left + ((px + 0.5) / W_) * r2.width,
+            clientY: r2.top + ((py + 0.5) / H_) * r2.height,
+          }))
+          at('pointerdown')
+          at('pointerup')
+        }
+        setBrush(1)
+        await sleep(150)
+        const beforeDab = stat()
+        dab(13, 13)   // empty corner: the seeded blocks are at (2,2) and (8,8)
+        await sleep(250)
+        ok('a 1 px brush paints exactly one pixel', stat() === beforeDab + 1,
+           `${beforeDab} -> ${stat()}`)
+
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }))
+        await sleep(300)
+        // 3 means three pixels across, so the dab is a 3x3 block: at r = 1.5 the
+        // corner centres sit 1.41 away and are inside the disc.
+        setBrush(3)
+        await sleep(150)
+        const beforeWide = stat()
+        dab(13, 13)
+        await sleep(250)
+        ok('a 3 px brush covers three pixels across', stat() === beforeWide + 9,
+           `${beforeWide} -> ${stat()}`)
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }))
+        await sleep(300)
 
         // --- the class editor in the create dialog ---
         byText('.dropdown button', 'Project')?.click()
