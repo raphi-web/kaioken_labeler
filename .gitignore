@@ -8,7 +8,8 @@
 /frontend/node_modules
 /frontend/dist
 /docs
-/backend/testdata/
+/backend/testdata/*
+!/backend/testdata/sam_golden.npz
 /.thumbnails/
 .code-graph.json
 __pycache__/

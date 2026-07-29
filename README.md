@@ -146,12 +146,44 @@ that only read it write their output to a temp directory, and the ones that need
 to edit labels work on a scratch copy of the whole project.
 
 ```bash
-python3 backend/test_masks.py    # mask round-trip over all the real label files
+python3 backend/test_masks.py    # mask round-trip, and the display stretch
 python3 backend/test_sam.py      # SAM2 still matches the torch implementation
 python3 backend/test_wand.py     # the wand's invariants, both distance sources
 python3 backend/test_project.py  # the class palette: ids, presets, deletion
 python3 backend/test_no_torch.py # nothing in this build imports torch
 ```
+
+`backend/testlib.py` holds the runner they share; a new test file needs
+`from testlib import fail, main` and `sys.exit(main(globals()))`.
+
+The frontend has no test framework, but `frontend/smoke.html` stubs the
+pywebview bridge and drives the real app through real DOM events, which is
+enough to catch a broken tool wiring:
+
+```bash
+cd frontend && npx vite &
+google-chrome --headless --dump-dom http://localhost:5173/smoke.html \
+  | grep -A99 '<pre id="result">'
+```
+
+Vite builds `index.html` only, so it never ships.
+
+## Measuring the wand
+
+Every default in the wand came from scoring it against this project's own
+labels, and `backend/bench_wand.py` is what produced them — kept so they can be
+re-derived rather than trusted:
+
+```bash
+python3 backend/bench_wand.py tolerance   # per-class tolerance sweep
+python3 backend/bench_wand.py sources     # spectral vs SAM2 features
+```
+
+Both take connected regions of the saved masks as ground truth, click the most
+interior pixel of each, and score by IoU. `sources` is how to test whether the
+SAM-features source does better on higher-resolution imagery than it does on
+10 m/px Sentinel-2 — on this dataset the two sources score the same overall and
+fail on different regions, which is why it is a switch rather than a default.
 
 ## Frontend development
 

@@ -20,6 +20,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from testlib import fail, main  # noqa: E402
+
 from data import SentinelImage  # noqa: E402
 from sam_service import SamService  # noqa: E402
 
@@ -43,15 +45,11 @@ CLICKS = {
 MAX_DIFFERING_PIXELS = 16
 
 
-def _fail(message):
-    raise AssertionError(message)
-
-
 def _service_and_rgb():
     svc = SamService()
     reason = svc.unavailable_reason()
     if reason:
-        _fail(f"SAM2 unavailable: {reason}")
+        fail(f"SAM2 unavailable: {reason}")
     image = SentinelImage(IMAGE, expected_bands=10)
     return svc, image.rgb_composite([0, 1, 2])
 
@@ -63,7 +61,7 @@ def test_no_torch_is_imported():
     svc.predict_points([(256, 256, 1)])
     for module in ("torch", "torchvision"):
         if module in sys.modules:
-            _fail(f"{module} was imported during a SAM2 round trip")
+            fail(f"{module} was imported during a SAM2 round trip")
 
 
 def test_preprocessing_matches_torchvision():
@@ -73,13 +71,13 @@ def test_preprocessing_matches_torchvision():
     golden = np.load(GOLDEN)
 
     if list(pre.shape) != list(golden["pre_shape"]):
-        _fail(f"preprocessed shape {pre.shape} != {tuple(golden['pre_shape'])}")
+        fail(f"preprocessed shape {pre.shape} != {tuple(golden['pre_shape'])}")
     stats = np.array([pre.min(), pre.max(), pre.mean(), pre.std()],
                      dtype=np.float64)
     if not np.allclose(stats, golden["pre_stats"], atol=1e-4):
-        _fail(f"preprocessed stats {stats} != {golden['pre_stats']}")
+        fail(f"preprocessed stats {stats} != {golden['pre_stats']}")
     if not np.allclose(pre[0, :, :4, :4], golden["pre_corner"], atol=1e-4):
-        _fail("preprocessed corner pixels differ — the resize is misaligned")
+        fail("preprocessed corner pixels differ — the resize is misaligned")
 
 
 def test_masks_match_the_torch_implementation():
@@ -104,26 +102,10 @@ def test_masks_match_the_torch_implementation():
         if abs(score - want_score) > 1e-5:
             problems.append(f"{name}: score {score} != {want_score}")
     if problems:
-        _fail("; ".join(problems))
+        fail("; ".join(problems))
 
 
-def main():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failures = 0
-    for test in tests:
-        try:
-            test()
-        except AssertionError as e:
-            failures += 1
-            print(f"FAIL {test.__name__}: {e}")
-        except Exception as e:  # noqa: BLE001 - surface the real error
-            failures += 1
-            print(f"ERROR {test.__name__}: {type(e).__name__}: {e}")
-        else:
-            print(f"ok   {test.__name__}")
-    print(f"\n{len(tests) - failures}/{len(tests)} passed")
-    return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(globals()))

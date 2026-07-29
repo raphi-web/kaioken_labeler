@@ -24,6 +24,63 @@ DEFAULT_MASK_FORMAT = {"dtype": "uint8", "nodata": UNLABELED}
 BAND_NAMES = ["Red", "Green", "Blue", "NIR1", "RE1", "RE2", "RE3", "NIR2", "SWIR1", "SWIR2"]
 
 
+def display_band_indices(bands, count):
+    """Three 0-based band indices for the R, G, B display channels.
+
+    Every path that turns a project's `display_bands` into something to read
+    from a raster comes through here: the viewer, the thumbnails, the config
+    validator and the setup form's defaults. They each had their own copy,
+    which agreed only because nobody had touched one of them.
+
+    An empty or missing selection falls back to the first three bands, and a
+    short one repeats its last index, so a 1- or 2-band raster still produces a
+    displayable triple rather than a shape error three frames later.
+    """
+    if not bands:
+        idx = list(range(min(3, count)))
+    else:
+        idx = [min(max(int(b), 0), count - 1) for b in bands][:3]
+    while len(idx) < 3:
+        idx.append(idx[-1] if idx else 0)
+    return idx
+
+
+def stretch_limits(bands, valid):
+    """Per-band 2nd/98th percentiles over valid pixels only.
+
+    Nodata is excluded because a fill value of -9999 drags the low percentile
+    to the floor and flattens everything real into the top of the range.
+
+    The hi <= lo guard covers a band that is constant over its valid pixels --
+    a fully cloudy tile, or one band of a mostly-nodata edge tile. Without it
+    the division below is 0/0.
+    """
+    count = len(bands)
+    lo = np.zeros(count, dtype=np.float32)
+    hi = np.ones(count, dtype=np.float32)
+    for b in range(count):
+        values = bands[b][valid]
+        if values.size:
+            lo[b], hi[b] = np.percentile(values, (2, 98))
+            if hi[b] <= lo[b]:
+                hi[b] = lo[b] + 1.0
+    return lo, hi
+
+
+def stretch_to_unit(bands, valid, limits=None):
+    """(C, H, W) -> float32 in [0, 1] by a robust per-band stretch; nodata 0.
+
+    The one definition of what this imagery looks like on screen. The labeling
+    pane and the thumbnail strip both go through here, which is the point: they
+    used to carry a copy each, and the thumbnails claimed to match the pane
+    only for as long as nobody edited one of the two.
+    """
+    lo, hi = limits if limits is not None else stretch_limits(bands, valid)
+    norm = np.clip((bands - lo[:, None, None]) / (hi - lo)[:, None, None], 0.0, 1.0)
+    norm[:, ~valid] = 0.0
+    return norm.astype(np.float32)
+
+
 class SentinelImage:
     """A multi-band image stack with cached robust normalization stats.
 
@@ -48,28 +105,9 @@ class SentinelImage:
                              f"data_profile), got {self.bands} bands")
 
         self.valid_mask = np.all(self.raw != self.nodata, axis=0)  # (H, W) bool
-        self.lo, self.hi = self._percentiles()
-        self.normalized = self._normalize()
-
-    def _percentiles(self):
-        """Per-band 2nd/98th percentiles over valid pixels only."""
-        lo = np.zeros(self.bands, dtype=np.float32)
-        hi = np.ones(self.bands, dtype=np.float32)
-        for b in range(self.bands):
-            band = self.raw[b][self.valid_mask]
-            if band.size:
-                lo[b], hi[b] = np.percentile(band, (2, 98))
-                if hi[b] <= lo[b]:
-                    hi[b] = lo[b] + 1.0
-        return lo, hi
-
-    def _normalize(self):
-        """Robust per-band scaling to [0, 1]; nodata pixels become 0."""
-        lo = self.lo[:, None, None]
-        hi = self.hi[:, None, None]
-        norm = np.clip((self.raw - lo) / (hi - lo), 0.0, 1.0)
-        norm[:, ~self.valid_mask] = 0.0
-        return norm.astype(np.float32)
+        self.lo, self.hi = stretch_limits(self.raw, self.valid_mask)
+        self.normalized = stretch_to_unit(self.raw, self.valid_mask,
+                                          (self.lo, self.hi))
 
     def rgb_composite(self, bands=None):
         """8-bit RGB preview.
@@ -78,11 +116,7 @@ class SentinelImage:
         omitted it uses the first three bands (last repeated if fewer). Indices
         are clamped to the available bands.
         """
-        if bands is None:
-            n = min(3, self.bands)
-            idx = list(range(n)) + [n - 1] * (3 - n)
-        else:
-            idx = [min(max(int(b), 0), self.bands - 1) for b in bands]
+        idx = display_band_indices(bands, self.bands)
         rgb = (self.normalized[idx] * 255).astype(np.uint8)  # (3, H, W)
         rgb[:, ~self.valid_mask] = 0
         return np.transpose(rgb, (1, 2, 0))  # (H, W, 3)

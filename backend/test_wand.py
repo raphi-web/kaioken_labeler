@@ -18,7 +18,7 @@ from scipy import ndimage
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from wand import _WAND_CONNECTIVITY  # noqa: E402
-from test_no_torch import _scratch_project  # noqa: E402
+from testlib import fail, main, with_scratch_api  # noqa: E402
 
 # A tolerance loose enough that regions are large enough to be interesting, and
 # a budget small enough that the cap actually bites at it.
@@ -27,23 +27,11 @@ BUDGET = 3200
 A, B, C = (256, 256), (120, 400), (400, 120)
 
 
-def _fail(message):
-    raise AssertionError(message)
-
-
-def _api(prefer=None):
-    from api import Api
-    tmp, _ = _scratch_project(prefer)
-    if tmp is None:
-        return None, None
-    return Api(project_root=tmp), tmp
-
-
 def _mask(result):
     """The bit-packed mask a caller gets back, as a bool array."""
     import base64
     if not result.get("ok"):
-        _fail(f"wand_select failed: {result.get('error')}")
+        fail(f"wand_select failed: {result.get('error')}")
     bits = np.unpackbits(np.frombuffer(base64.b64decode(result["mask"]),
                                        dtype=np.uint8))
     n = result["width"] * result["height"]
@@ -56,17 +44,6 @@ def _select(api, samples, **options):
     return api.wand_select([[x, y] for x, y in samples], opts)
 
 
-def _run(check, prefer=None):
-    """Give a check an Api on a scratch project, and clean up after it."""
-    import shutil
-    api, tmp = _api(prefer)
-    if api is None:
-        print("     (no project to copy — skipping)")
-        return
-    try:
-        check(api)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------- the options object ----------
@@ -75,18 +52,18 @@ def test_options_are_passed_as_one_object():
     def check(api):
         r = _select(api, [A], tolerance=0.13, max_pixels=1000, sample_size=9)
         if not r.get("ok"):
-            _fail(f"options object rejected: {r.get('error')}")
+            fail(f"options object rejected: {r.get('error')}")
         if r["count"] > 1000:
-            _fail(f"max_pixels ignored: {r['count']} > 1000")
-    _run(check)
+            fail(f"max_pixels ignored: {r['count']} > 1000")
+    with_scratch_api(check)
 
 
 def test_missing_options_use_defaults():
     def check(api):
         r = api.wand_select([[256, 256]], {"tolerance": TOL})
         if not r.get("ok"):
-            _fail(f"a bare tolerance should suffice: {r.get('error')}")
-    _run(check)
+            fail(f"a bare tolerance should suffice: {r.get('error')}")
+    with_scratch_api(check)
 
 
 def test_bad_input_returns_an_error_not_an_exception():
@@ -97,10 +74,10 @@ def test_bad_input_returns_an_error_not_an_exception():
                           ({"tolerance": TOL, "sample_size": "x"}, "bad sample size")):
             r = api.wand_select([[10, 10]], opts)
             if r.get("ok") or not r.get("error"):
-                _fail(f"{why} should return an error, got {r}")
+                fail(f"{why} should return an error, got {r}")
         if api.wand_select([], {"tolerance": TOL}).get("ok"):
-            _fail("an empty sample list should return an error")
-    _run(check)
+            fail("an empty sample list should return an error")
+    with_scratch_api(check)
 
 
 # ---------- the invariants ----------
@@ -115,9 +92,9 @@ def test_adding_a_sample_never_removes_a_pixel():
                 for i in range(len(masks) - 1):
                     lost = int((masks[i] & ~masks[i + 1]).sum())
                     if lost:
-                        _fail(f"tol={tol} budget={budget}: adding sample "
+                        fail(f"tol={tol} budget={budget}: adding sample "
                               f"{i + 2} removed {lost} px")
-    _run(check)
+    with_scratch_api(check)
 
 
 def test_a_sample_region_is_the_same_alone_or_alongside_others():
@@ -126,8 +103,8 @@ def test_a_sample_region_is_the_same_alone_or_alongside_others():
         both = _mask(_select(api, [A, B], max_pixels=BUDGET))
         missing = int((solo & ~both).sum())
         if missing:
-            _fail(f"{missing} px of B's own region vanished when A was added")
-    _run(check)
+            fail(f"{missing} px of B's own region vanished when A was added")
+    with_scratch_api(check)
 
 
 def test_the_budget_is_exact_and_per_sample():
@@ -135,12 +112,12 @@ def test_the_budget_is_exact_and_per_sample():
         for budget in (777, 3333):
             one = _select(api, [A], max_pixels=budget)
             if one["count"] != budget:
-                _fail(f"budget {budget}: got {one['count']} px, expected exactly it")
+                fail(f"budget {budget}: got {one['count']} px, expected exactly it")
             three = _select(api, [A, B, C], max_pixels=budget)
             if three["count"] != 3 * budget:
-                _fail(f"budget {budget} x 3 samples: got {three['count']}, "
+                fail(f"budget {budget} x 3 samples: got {three['count']}, "
                       f"expected {3 * budget}")
-    _run(check)
+    with_scratch_api(check)
 
 
 def test_a_sample_is_always_inside_its_own_selection():
@@ -149,8 +126,8 @@ def test_a_sample_is_always_inside_its_own_selection():
         m = _mask(_select(api, [A, B], tolerance=0.0, max_pixels=1))
         for x, y in (A, B):
             if not m[y, x]:
-                _fail(f"sample ({x}, {y}) is not in its own selection")
-    _run(check)
+                fail(f"sample ({x}, {y}) is not in its own selection")
+    with_scratch_api(check)
 
 
 def test_a_capped_selection_stays_connected():
@@ -158,8 +135,8 @@ def test_a_capped_selection_stays_connected():
         m = _mask(_select(api, [A], max_pixels=8000))
         pieces = ndimage.label(m, structure=_WAND_CONNECTIVITY)[1]
         if pieces != 1:
-            _fail(f"a clipped single-sample selection broke into {pieces} pieces")
-    _run(check)
+            fail(f"a clipped single-sample selection broke into {pieces} pieces")
+    with_scratch_api(check)
 
 
 def test_nodata_is_never_selected():
@@ -170,9 +147,9 @@ def test_nodata_is_never_selected():
             return
         m = _mask(_select(api, [A], tolerance=0.9))
         if (m & invalid).any():
-            _fail(f"{int((m & invalid).sum())} nodata px were selected")
+            fail(f"{int((m & invalid).sum())} nodata px were selected")
     # 14.tiff is the one image in this dataset that carries nodata (6,204 px).
-    _run(check, prefer="14.tiff")
+    with_scratch_api(check, prefer="14.tiff")
 
 
 def test_global_reaches_disconnected_material():
@@ -181,13 +158,13 @@ def test_global_reaches_disconnected_material():
         local = _mask(_select(api, [A], max_pixels=None))
         everywhere = _mask(_select(api, [A], max_pixels=None, **{"global": True}))
         if int(everywhere.sum()) <= int(local.sum()):
-            _fail("global mode selected no more than the connected piece")
+            fail("global mode selected no more than the connected piece")
         if (local & ~everywhere).any():
-            _fail("global mode dropped pixels the connected selection had")
+            fail("global mode dropped pixels the connected selection had")
         pieces = ndimage.label(everywhere, structure=_WAND_CONNECTIVITY)[1]
         if pieces < 2:
-            _fail("global mode returned a single piece — connectivity still bounding it")
-    _run(check)
+            fail("global mode returned a single piece — connectivity still bounding it")
+    with_scratch_api(check)
 
 
 def test_global_still_honours_the_budget():
@@ -195,8 +172,8 @@ def test_global_still_honours_the_budget():
         for budget in (500, 5000):
             r = _select(api, [A], max_pixels=budget, **{"global": True})
             if r["count"] != budget:
-                _fail(f"global budget {budget}: got {r['count']} px")
-    _run(check)
+                fail(f"global budget {budget}: got {r['count']} px")
+    with_scratch_api(check)
 
 
 def test_a_capped_global_selection_keeps_the_nearest_pixels():
@@ -211,9 +188,9 @@ def test_a_capped_global_selection_keeps_the_nearest_pixels():
         if len(fy):
             dropped = np.sqrt((fy - A[1]) ** 2 + (fx - A[0]) ** 2).min()
             if dropped < kept - 1.5:  # ties on the ring are arbitrary
-                _fail(f"a pixel at {dropped:.0f} px was dropped while one at "
+                fail(f"a pixel at {dropped:.0f} px was dropped while one at "
                       f"{kept:.0f} px was kept")
-    _run(check)
+    with_scratch_api(check)
 
 
 def test_global_is_still_strictly_additive():
@@ -223,8 +200,8 @@ def test_global_is_still_strictly_additive():
         for i in range(len(masks) - 1):
             lost = int((masks[i] & ~masks[i + 1]).sum())
             if lost:
-                _fail(f"global: adding sample {i + 2} removed {lost} px")
-    _run(check)
+                fail(f"global: adding sample {i + 2} removed {lost} px")
+    with_scratch_api(check)
 
 
 def test_global_and_protect_compose():
@@ -235,8 +212,8 @@ def test_global_and_protect_compose():
             return
         m = _mask(_select(api, [A], protect=True, **{"global": True}))
         if (m & (labels != 255)).any():
-            _fail("global + protect selected labeled pixels")
-    _run(check)
+            fail("global + protect selected labeled pixels")
+    with_scratch_api(check)
 
 
 def test_a_negative_shrinks_the_selection():
@@ -248,10 +225,10 @@ def test_a_negative_shrinks_the_selection():
         cut = _mask(_select(api, [A], max_pixels=None,
                             negatives=[[int(xs[j]), int(ys[j])]]))
         if int(cut.sum()) >= int(plain.sum()):
-            _fail("a negative click did not shrink the selection")
+            fail("a negative click did not shrink the selection")
         if (cut & ~plain).any():
-            _fail("a negative click ADDED pixels")
-    _run(check)
+            fail("a negative click ADDED pixels")
+    with_scratch_api(check)
 
 
 def test_a_negative_reaches_every_fragment():
@@ -265,12 +242,12 @@ def test_a_negative_reaches_every_fragment():
         cut = _mask(_select(api, [A], negatives=neg, **opts))
         removed = plain & ~cut
         if not removed.any():
-            _fail("the negative removed nothing")
+            fail("the negative removed nothing")
         pieces = ndimage.label(removed, structure=_WAND_CONNECTIVITY)[1]
         if pieces < 2:
-            _fail("the negative only removed one connected piece; it should "
+            fail("the negative only removed one connected piece; it should "
                   "subtract that material wherever it appears")
-    _run(check)
+    with_scratch_api(check)
 
 
 def test_a_sample_survives_its_own_negative_neighbourhood():
@@ -279,8 +256,8 @@ def test_a_sample_survives_its_own_negative_neighbourhood():
         m = _mask(_select(api, [A], max_pixels=None,
                           negatives=[[B[0], B[1]], [C[0], C[1]]]))
         if not m[A[1], A[0]]:
-            _fail("the positive sample was excluded from its own selection")
-    _run(check)
+            fail("the positive sample was excluded from its own selection")
+    with_scratch_api(check)
 
 
 def test_negatives_compose_with_protect_and_global():
@@ -289,13 +266,13 @@ def test_negatives_compose_with_protect_and_global():
         r = _select(api, [A], protect=True, negatives=[[B[0], B[1]]],
                     max_pixels=5000, **{"global": True})
         if not r.get("ok"):
-            _fail(f"the combination was rejected: {r.get('error')}")
+            fail(f"the combination was rejected: {r.get('error')}")
         m = _mask(r)
         if labels is not None and (m & (labels != 255)).any():
-            _fail("protect stopped applying once negatives were present")
+            fail("protect stopped applying once negatives were present")
         if r["count"] > 5000:
-            _fail("the budget stopped applying once negatives were present")
-    _run(check)
+            fail("the budget stopped applying once negatives were present")
+    with_scratch_api(check)
 
 
 def test_protect_never_selects_an_already_labeled_pixel():
@@ -307,8 +284,8 @@ def test_protect_never_selects_an_already_labeled_pixel():
         m = _mask(_select(api, [A, B], protect=True))
         clashes = int((m & (labels != 255)).sum())
         if clashes:
-            _fail(f"{clashes} already-labeled px were selected with protect on")
-    _run(check)
+            fail(f"{clashes} already-labeled px were selected with protect on")
+    with_scratch_api(check)
 
 
 def test_protect_reports_what_it_withheld():
@@ -316,11 +293,11 @@ def test_protect_reports_what_it_withheld():
         off = _select(api, [A], protect=False)
         on = _select(api, [A], protect=True)
         if on["count"] + on["protected"] != off["count"]:
-            _fail(f"{on['count']} kept + {on['protected']} protected "
+            fail(f"{on['count']} kept + {on['protected']} protected "
                   f"!= {off['count']} unprotected")
         if on["count"] > off["count"]:
-            _fail("protection selected MORE than no protection")
-    _run(check)
+            fail("protection selected MORE than no protection")
+    with_scratch_api(check)
 
 
 def test_protect_is_a_subset_not_a_different_selection():
@@ -329,8 +306,8 @@ def test_protect_is_a_subset_not_a_different_selection():
         off = _mask(_select(api, [A, B], protect=False))
         on = _mask(_select(api, [A, B], protect=True))
         if (on & ~off).any():
-            _fail(f"{int((on & ~off).sum())} px appear only when protected")
-    _run(check)
+            fail(f"{int((on & ~off).sum())} px appear only when protected")
+    with_scratch_api(check)
 
 
 def test_protection_conducts_through_labeled_pixels():
@@ -351,25 +328,25 @@ def test_protection_conducts_through_labeled_pixels():
         # the unprotected selection -- no more, and crucially no less.
         expected = off & (labels == 255)
         if not np.array_equal(on, expected):
-            _fail(f"{int((expected & ~on).sum())} unlabeled px were lost, "
+            fail(f"{int((expected & ~on).sum())} unlabeled px were lost, "
                   f"{int((on & ~expected).sum())} extra px appeared")
-    _run(check)
+    with_scratch_api(check)
 
 
 def test_the_reported_count_matches_the_mask():
     def check(api):
         r = _select(api, [A, B], max_pixels=BUDGET)
         if int(_mask(r).sum()) != r["count"]:
-            _fail(f"count {r['count']} != {int(_mask(r).sum())} px in the mask")
-    _run(check)
+            fail(f"count {r['count']} != {int(_mask(r).sum())} px in the mask")
+    with_scratch_api(check)
 
 
 def test_an_under_budget_region_is_not_reported_as_capped():
     def check(api):
         r = _select(api, [A], tolerance=0.05, max_pixels=100000)
         if r["capped"]:
-            _fail("a region smaller than the budget was reported as capped")
-    _run(check)
+            fail("a region smaller than the budget was reported as capped")
+    with_scratch_api(check)
 
 
 # ---------- the SAM2 embedding source ----------
@@ -426,8 +403,8 @@ def test_sam_source_is_rejected_cleanly_when_misconfigured():
                             "level": "nonsense"}, "bad level")):
             r = api.wand_select([[10, 10]], opts)
             if r.get("ok") or not r.get("error"):
-                _fail(f"{why} should return an error, got {r}")
-    _run(check)
+                fail(f"{why} should return an error, got {r}")
+    with_scratch_api(check)
 
 
 def test_the_embedding_field_is_a_cosine_distance_at_pixel_resolution():
@@ -451,14 +428,14 @@ def test_the_embedding_field_is_a_cosine_distance_at_pixel_resolution():
         for level in ("fine", "mid", "deep"):
             _, field = _field(api, A, "sam", level)
             if field.shape != (api._image.height, api._image.width):
-                _fail(f"{level}: field is {field.shape}, image is "
+                fail(f"{level}: field is {field.shape}, image is "
                       f"{(api._image.height, api._image.width)}")
             if not np.isfinite(field).all():
-                _fail(f"{level}: field has non-finite values")
+                fail(f"{level}: field has non-finite values")
             if field.min() < -1e-5 or field.max() > 2 + 1e-5:
-                _fail(f"{level}: cosine distance out of [0, 2]: "
+                fail(f"{level}: cosine distance out of [0, 2]: "
                       f"{field.min()}..{field.max()}")
-    _run(check)
+    with_scratch_api(check)
 
 
 def test_the_default_tolerance_selects_a_region_and_not_the_scene():
@@ -480,10 +457,10 @@ def test_the_default_tolerance_selects_a_region_and_not_the_scene():
         for point in (A, B, C):
             share = 100 * _sam_select(api, [point], protect=False)["count"] / n
             if not 0.05 <= share <= 25:
-                _fail(f"at tolerance {SAM_TOL} a click at {point} selected "
+                fail(f"at tolerance {SAM_TOL} a click at {point} selected "
                       f"{share:.2f}% of the image — outside the band the "
                       f"default is meant to sit in")
-    _run(check)
+    with_scratch_api(check)
 
 
 def test_the_two_sources_measure_different_things():
@@ -499,8 +476,8 @@ def test_the_two_sources_measure_different_things():
         _, spectral = _field(api, A, "image")
         _, embedding = _field(api, A, "sam")
         if np.allclose(spectral, embedding):
-            _fail("the embedding field is identical to the spectral one")
-    _run(check)
+            fail("the embedding field is identical to the spectral one")
+    with_scratch_api(check)
 
 
 def test_adding_a_sample_never_removes_a_pixel_on_embeddings():
@@ -512,8 +489,8 @@ def test_adding_a_sample_never_removes_a_pixel_on_embeddings():
         two = _mask(_sam_select(api, [A, B], protect=False))
         lost = int((one & ~two).sum())
         if lost:
-            _fail(f"a second sample dropped {lost} px the first had selected")
-    _run(check)
+            fail(f"a second sample dropped {lost} px the first had selected")
+    with_scratch_api(check)
 
 
 def test_the_embedding_selection_is_deterministic_and_respects_the_budget():
@@ -524,35 +501,19 @@ def test_the_embedding_selection_is_deterministic_and_respects_the_budget():
         first = _mask(_sam_select(api, [A], protect=False))
         again = _mask(_sam_select(api, [A], protect=False))
         if not np.array_equal(first, again):
-            _fail("two identical embedding selections disagree")
+            fail("two identical embedding selections disagree")
         capped = _sam_select(api, [A], protect=False, max_pixels=BUDGET)
         if capped["count"] > BUDGET:
-            _fail(f"budget ignored on embeddings: {capped['count']} > {BUDGET}")
+            fail(f"budget ignored on embeddings: {capped['count']} > {BUDGET}")
         # Connectivity still applies: every selected pixel is reachable from
         # the click, exactly as with the spectral source.
         pieces = ndimage.label(_mask(capped), structure=_WAND_CONNECTIVITY)[1]
         if pieces > 1:
-            _fail(f"a connected embedding selection came back in {pieces} pieces")
-    _run(check)
+            fail(f"a connected embedding selection came back in {pieces} pieces")
+    with_scratch_api(check)
 
 
-def main():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failures = 0
-    for test in tests:
-        try:
-            test()
-        except AssertionError as e:
-            failures += 1
-            print(f"FAIL {test.__name__}: {e}")
-        except Exception as e:  # noqa: BLE001 - surface the real error
-            failures += 1
-            print(f"ERROR {test.__name__}: {type(e).__name__}: {e}")
-        else:
-            print(f"ok   {test.__name__}")
-    print(f"\n{len(tests) - failures}/{len(tests)} passed")
-    return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(globals()))

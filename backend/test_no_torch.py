@@ -24,6 +24,9 @@ import tempfile
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from testlib import fail, main as run_tests  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
@@ -95,17 +98,13 @@ class _BannedFinder:
         return None
 
 
-def _fail(message):
-    raise AssertionError(message)
-
-
 def test_backend_modules_import_without_torch():
     for name in ("data", "project", "sam_service", "api"):
         sys.modules.pop(name, None)
         importlib.import_module(name)
     for name in BANNED:
         if name in sys.modules:
-            _fail(f"{name} got imported while loading the backend")
+            fail(f"{name} got imported while loading the backend")
 
 
 def test_labeling_round_trip_without_torch():
@@ -128,22 +127,22 @@ def test_labeling_round_trip_without_torch():
 
     for module in BANNED:
         if module in sys.modules:
-            _fail(f"{module} got imported during a labeling round trip")
+            fail(f"{module} got imported during a labeling round trip")
 
 
 def _round_trip(api, UNLABELED, read_label_mask):
     project = api.get_project()
     if not project:
-        _fail("no project opened")
+        fail("no project opened")
     image = api.get_image()
     if not image:
-        _fail("no image loaded")
+        fail("no image loaded")
 
     name = image["name"]
     mask_path = api._project.mask_paths(name)[0]
     original = read_label_mask(mask_path)
     if original is None:
-        _fail(f"could not read the existing mask for {name}")
+        fail(f"could not read the existing mask for {name}")
 
     if True:
         # Paint a 10x10 block of class 2 into the top-left corner and persist it
@@ -153,29 +152,29 @@ def _round_trip(api, UNLABELED, read_label_mask):
         api.set_labels(base64.b64encode(labels.tobytes()).decode("ascii"))
         saved = api.autosave_user_mask()
         if not saved.get("ok"):
-            _fail(f"autosave failed: {saved}")
+            fail(f"autosave failed: {saved}")
 
         reloaded = read_label_mask(mask_path)
         if reloaded is None:
-            _fail("mask could not be read back after autosave")
+            fail("mask could not be read back after autosave")
         if not np.array_equal(reloaded, labels):
-            _fail(f"{int((reloaded != labels).sum())} px differ after a save/load cycle")
+            fail(f"{int((reloaded != labels).sum())} px differ after a save/load cycle")
         if not (reloaded[:10, :10] == 2).all():
-            _fail("the painted block did not survive the round trip")
+            fail("the painted block did not survive the round trip")
         # The rest of the image must be untouched by the edit.
         rest = np.ones(original.shape, dtype=bool)
         rest[:10, :10] = False
         if not np.array_equal(reloaded[rest], original[rest]):
-            _fail("painting one corner changed pixels elsewhere")
+            fail("painting one corner changed pixels elsewhere")
         if UNLABELED in labels[:10, :10]:
-            _fail("painted block still contains unlabeled pixels")
+            fail("painted block still contains unlabeled pixels")
         # Restoring is still checked: it is the same write path the app uses
         # when you undo, and it runs against the scratch copy.
         api.set_labels(base64.b64encode(original.tobytes()).decode("ascii"))
         api.autosave_user_mask()
         restored = read_label_mask(mask_path)
         if restored is None or not np.array_equal(restored, original):
-            _fail("the mask did not restore to its original contents")
+            fail("the mask did not restore to its original contents")
 
 
 def test_sam_snap_without_torch():
@@ -197,12 +196,12 @@ def _sam_snap(api):
         return
     result = api.sam_snap([[256, 256, 1]])
     if not result.get("ok"):
-        _fail(f"sam_snap failed: {result.get('error')}")
+        fail(f"sam_snap failed: {result.get('error')}")
     if not result.get("polygons"):
-        _fail("sam_snap returned no polygons")
+        fail("sam_snap returned no polygons")
     for name in BANNED:
         if name in sys.modules:
-            _fail(f"{name} got imported during a SAM2 snap")
+            fail(f"{name} got imported during a SAM2 snap")
 
 
 def main():
@@ -219,21 +218,7 @@ def main():
         print("FAIL: the import block is not working; results would be meaningless")
         return 1
 
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failures = 0
-    for test in tests:
-        try:
-            test()
-        except AssertionError as e:
-            failures += 1
-            print(f"FAIL {test.__name__}: {e}")
-        except Exception as e:  # noqa: BLE001 - surface the real error
-            failures += 1
-            print(f"ERROR {test.__name__}: {type(e).__name__}: {e}")
-        else:
-            print(f"ok   {test.__name__}")
-    print(f"\n{len(tests) - failures}/{len(tests)} passed")
-    return 1 if failures else 0
+    return run_tests(globals())
 
 
 if __name__ == "__main__":

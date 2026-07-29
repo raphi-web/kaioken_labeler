@@ -31,6 +31,21 @@
                 return Promise.resolve({ name: 't.tif', png: PNG, width: W, height: H,
                                          labels: b64(labels), labeled_pixels: 0 })
               case 'sam_available': return Promise.resolve({ available: true })
+              case 'new_project':
+                return Promise.resolve({ ok: true, needs_setup: true, root: '/tmp/p',
+                  defaults: { project_name: 'p', input_channels: 4,
+                    input_patch_size: 96, band_names: ['a','b','c','d'],
+                    display_bands: [0,1,2], images_folder: '.',
+                    masks_user: 'masks_user', bands_detected: true,
+                    class_preset: 'sentinel2',
+                    classes: [{id:0,name:'Urban',color:'#e05a4f'},
+                              {id:1,name:'Road',color:'#4a4a55'}],
+                    class_presets: {
+                      sentinel2: [{id:0,name:'Urban',color:'#e05a4f'},
+                                  {id:1,name:'Road',color:'#4a4a55'},
+                                  {id:2,name:'Water',color:'#2f7ce0'}],
+                      binary: [{id:0,name:'Target',color:'#ff5028'},
+                               {id:1,name:'Background',color:'#3c8cff'}] } } })
               case 'wand_select':
                 return Promise.resolve({ ok: true, mask: b64(packed), count: 16,
                                          available: 16, protected: 0, capped: false,
@@ -177,6 +192,47 @@
         ok('coming back has no stale selection',
            !document.querySelector('.pane-title .hint')?.textContent.includes('16 px'),
            JSON.stringify(document.querySelector('.pane-title .hint')?.textContent?.slice(0, 40)))
+        // --- the class editor in the create dialog ---
+        byText('.dropdown button', 'Project')?.click()
+        await sleep(120)
+        byText('.dropdown-menu button, .dropdown button', 'New / Open')?.click()
+        await sleep(350)
+        ok('setup dialog opens', !!document.querySelector('.modal'))
+        const editor = document.querySelector('.class-editor')
+        ok('class editor renders', !!editor)
+        ok('one row per class', editor?.querySelectorAll('.class-row').length === 2,
+           String(editor?.querySelectorAll('.class-row').length))
+        // add a row
+        byText('.class-add', '+ Add class').click()
+        await sleep(120)
+        ok('add class appends a row',
+           document.querySelectorAll('.class-row').length === 3,
+           String(document.querySelectorAll('.class-row').length))
+        // remove one
+        document.querySelectorAll('.class-row-remove')[0].click()
+        await sleep(120)
+        ok('remove drops a row',
+           document.querySelectorAll('.class-row').length === 2,
+           String(document.querySelectorAll('.class-row').length))
+        // switch preset
+        const select = document.querySelector('.class-preset select')
+        const selSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLSelectElement.prototype, 'value').set
+        selSetter.call(select, 'binary')
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+        await sleep(150)
+        ok('preset replaces the list',
+           [...document.querySelectorAll('.class-row input[type=text]')]
+             .map((i) => i.value).join(',') === 'Target,Background',
+           [...document.querySelectorAll('.class-row input[type=text]')].map((i) => i.value).join(','))
+        // a blank name must block Create
+        const firstName = document.querySelector('.class-row input[type=text]')
+        setter.call(firstName, '')
+        firstName.dispatchEvent(new Event('input', { bubbles: true }))
+        await sleep(150)
+        ok('a blank class name disables Create',
+           byText('.modal-actions button', 'Create Project')?.disabled === true)
+
       } catch (e) {
         out.push('FAIL threw: ' + (e && e.stack ? e.stack.split('\n')[0] : e))
       }

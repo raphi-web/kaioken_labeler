@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../bridge'
-import { classKeyLabel } from '../constants'
+import ClassListEditor from './ClassListEditor'
 
 const RGB_CHANNELS = [{ key: 'r', label: 'R' }, { key: 'g', label: 'G' }, { key: 'b', label: 'B' }]
 
@@ -17,6 +17,10 @@ function nextClassColor(classes) {
 
 // A valid [R, G, B] band-index triple: default to the first three bands, and
 // clamp every entry into the available band range.
+//
+// The mirror of data.display_band_indices, which every backend path goes
+// through. Two implementations because they cannot share code across the
+// bridge; they are checked against each other by hand, so change both.
 function normalizeDisplayBands(bands, channels) {
   const out = Array.isArray(bands) ? bands.slice(0, 3) : []
   while (out.length < 3) out.push(Math.min(out.length, channels - 1))
@@ -83,7 +87,6 @@ export default function ProjectSetup({ mode = 'create', root, source, defaults, 
   const removedNames = Object.fromEntries(
     (defaults.classes ?? []).map((c) => [c.id, c.name]))
   const needsConfirm = clearing.length > 0
-  const totalCleared = clearing.reduce((sum, u) => sum + u.pixels, 0)
   // Tile validity: the overlap must leave a forward step. There is no minimum
   // tile size here — the full app needs tiles at least as large as the model's
   // patch, but any tile you can see is a tile you can label.
@@ -343,84 +346,22 @@ export default function ProjectSetup({ mode = 'create', root, source, defaults, 
           <label title="The label space: one id per class, stored in every mask">
             Classes
           </label>
-          <div className="class-editor">
-            {!editing && defaults.class_presets && (
-              <div className="class-preset">
-                start from
-                <select
-                  value={form.class_preset ?? ''}
-                  onChange={(e) => applyPreset(e.target.value)}
-                >
-                  {Object.keys(defaults.class_presets).map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
-                <span className="hint">then edit the list below</span>
-              </div>
-            )}
-            {form.classes.map((c, i) => (
-              <div key={c.id ?? `new-${i}`} className="class-row">
-                {/* The shortcut key, so it is visible that the list has grown
-                    past the ten-and-one keys CLASS_KEYS provides and the rest
-                    are click-only. */}
-                <span className="class-row-key">{classKeyLabel(i) || '·'}</span>
-                <input
-                  type="color"
-                  value={c.color || '#888888'}
-                  onChange={(e) => setClassField(i, 'color', e.target.value)}
-                />
-                <input
-                  type="text"
-                  value={c.name}
-                  placeholder="Class name"
-                  onChange={(e) => setClassField(i, 'name', e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="class-row-remove"
-                  disabled={form.classes.length < 2}
-                  title={form.classes.length < 2
-                    ? 'A project needs at least one class'
-                    : `Remove ${c.name}`}
-                  onClick={() => removeClass(i)}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            <button type="button" className="class-add" onClick={addClass}>
-              + Add class
-            </button>
-            {editing && removedIds.length > 0 && (
-              <div className={needsConfirm ? 'modal-error' : 'hint'}>
-                {usage === null
-                  ? 'checking what those classes have labeled…'
-                  : needsConfirm
-                    ? (
-                      <>
-                        <div>
-                          Removing {clearing.map((u) => (
-                            `${removedNames[u.id] ?? `class ${u.id}`} `
-                            + `(${u.pixels.toLocaleString()} px in ${u.images} `
-                            + `image${u.images === 1 ? '' : 's'})`)).join(', ')}
-                          {' '}unlabels {totalCleared.toLocaleString()} px in the
-                          saved masks. This cannot be undone. AI masks are left
-                          alone.
-                        </div>
-                        <label className="class-confirm">
-                          <input
-                            type="checkbox"
-                            checked={confirmRemoval}
-                            onChange={(e) => setConfirmRemoval(e.target.checked)}
-                          />
-                          Yes, unlabel those pixels
-                        </label>
-                      </>
-                    )
-                    : 'those classes have no labeled pixels'}
-              </div>
-            )}
-          </div>
+          <ClassListEditor
+            classes={form.classes}
+            presets={defaults.class_presets}
+            preset={form.class_preset}
+            editing={editing}
+            clearing={clearing}
+            removedNames={removedNames}
+            removedCount={removedIds.length}
+            usage={usage}
+            confirmRemoval={confirmRemoval}
+            setConfirmRemoval={setConfirmRemoval}
+            onField={setClassField}
+            onAdd={addClass}
+            onRemove={removeClass}
+            onPreset={applyPreset}
+          />
         </div>
 
         <div className="form-row">

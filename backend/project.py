@@ -17,7 +17,8 @@ import threading
 
 import numpy as np
 import rasterio
-from data import DEFAULT_MASK_FORMAT, MASK_DTYPES
+from data import (DEFAULT_MASK_FORMAT, MASK_DTYPES,
+                  display_band_indices, stretch_to_unit)
 from PIL import Image
 from rasterio.enums import Resampling
 
@@ -127,10 +128,7 @@ def default_band_names(input_channels):
 def default_display_bands(input_channels):
     """0-based [R, G, B] band indices used for the on-screen RGB composite:
     the first three bands, with the last repeated when fewer than three exist."""
-    idx = list(range(min(3, input_channels)))
-    while len(idx) < 3:
-        idx.append(idx[-1] if idx else 0)
-    return idx
+    return display_band_indices(None, input_channels)
 
 
 def default_config(project_name, input_channels=10, patch_size=96, preset=None):
@@ -165,15 +163,10 @@ def config_from_settings(settings, existing_classes=None, next_class_id=None):
         raise ValueError("Invalid project config: bands and patch size must be integers")
     names = settings.get("band_names") or default_band_names(channels)
     raw_display = settings.get("display_bands")
-    if raw_display:
-        try:
-            display = [min(max(int(b), 0), channels - 1) for b in raw_display][:3]
-        except (TypeError, ValueError):
-            raise ValueError("Invalid project config: display_bands must be integers")
-        while len(display) < 3:
-            display.append(display[-1] if display else 0)
-    else:
-        display = default_display_bands(channels)
+    try:
+        display = display_band_indices(raw_display, channels)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid project config: display_bands must be integers")
     raw_ratio = settings.get("validation_ratio", DEFAULT_VALIDATION_RATIO)
     try:
         ratio = round(float(DEFAULT_VALIDATION_RATIO if raw_ratio is None else raw_ratio), 3)
@@ -233,117 +226,152 @@ def probe_band_count(folder):
     return None
 
 
-def validate_config(config):
-    """Return the config if it matches the schema, else raise ValueError."""
-    def expect(condition, message):
-        if not condition:
-            raise ValueError(f"Invalid project config: {message}")
+def _expect(condition, message):
+    """Shared by every section check below; the message is the whole point."""
+    if not condition:
+        raise ValueError(f"Invalid project config: {message}")
 
-    expect(isinstance(config, dict), "root must be a JSON object")
-    expect(isinstance(config.get("project_name"), str) and config["project_name"].strip(),
-           "'project_name' must be a non-empty string")
 
-    profile = config.get("data_profile")
-    expect(isinstance(profile, dict), "'data_profile' must be an object")
-    expect(isinstance(profile.get("input_channels"), int) and profile["input_channels"] > 0,
-           "'data_profile.input_channels' must be a positive integer")
+def _check_data_profile(profile):
+    """The raster shape the project expects: bands, patch size, band names.
+
+    The patch size and the PointRend flag belong to the training app rather
+    than to this build, but the schema is shared -- so they are validated here
+    and round-tripped untouched rather than dropped.
+    """
+    _expect(isinstance(profile, dict), "'data_profile' must be an object")
+    _expect(isinstance(profile.get("input_channels"), int) and profile["input_channels"] > 0,
+            "'data_profile.input_channels' must be a positive integer")
     patch = profile.get("input_patch_size")
-    expect(isinstance(patch, list) and len(patch) == 2
-           and all(isinstance(v, int) and v > 0 for v in patch),
-           "'data_profile.input_patch_size' must be [int, int]")
-    expect(patch[0] == patch[1],
-           "'data_profile.input_patch_size' must be square, e.g. [96, 96]")
-    expect(patch[0] % 32 == 0,
-           "'data_profile.input_patch_size' must be a multiple of 32 "
-           "(the encoder downsamples 32x)")
+    _expect(isinstance(patch, list) and len(patch) == 2
+            and all(isinstance(v, int) and v > 0 for v in patch),
+            "'data_profile.input_patch_size' must be [int, int]")
+    _expect(patch[0] == patch[1],
+            "'data_profile.input_patch_size' must be square, e.g. [96, 96]")
+    _expect(patch[0] % 32 == 0,
+            "'data_profile.input_patch_size' must be a multiple of 32 "
+            "(the encoder downsamples 32x)")
+
     band_names = profile.get("band_names")
     if band_names is not None:  # optional: older configs don't have it
-        expect(isinstance(band_names, list)
-               and all(isinstance(n, str) and n.strip() for n in band_names),
-               "'data_profile.band_names' must be a list of non-empty strings")
-        expect(len(band_names) == profile["input_channels"],
-               "'data_profile.band_names' must have one name per input channel")
+        _expect(isinstance(band_names, list)
+                and all(isinstance(n, str) and n.strip() for n in band_names),
+                "'data_profile.band_names' must be a list of non-empty strings")
+        _expect(len(band_names) == profile["input_channels"],
+                "'data_profile.band_names' must have one name per input channel")
 
     use_pointrend = profile.get("use_pointrend")
     if use_pointrend is not None:  # optional: older configs default to off
-        expect(isinstance(use_pointrend, bool),
-               "'data_profile.use_pointrend' must be a boolean")
+        _expect(isinstance(use_pointrend, bool),
+                "'data_profile.use_pointrend' must be a boolean")
 
     display_bands = profile.get("display_bands")
     if display_bands is not None:  # optional: older configs default to first three
-        expect(isinstance(display_bands, list) and len(display_bands) == 3
-               and all(isinstance(b, int) and 0 <= b < profile["input_channels"]
-                       for b in display_bands),
-               "'data_profile.display_bands' must be three band indices in "
-               "[0, input_channels)")
+        _expect(isinstance(display_bands, list) and len(display_bands) == 3
+                and all(isinstance(b, int) and 0 <= b < profile["input_channels"]
+                        for b in display_bands),
+                "'data_profile.display_bands' must be three band indices in "
+                "[0, input_channels)")
 
+
+def _check_classes(config):
+    """The label space. Every saved mask stores these ids, so this is the
+    section where a mistake changes what existing ground truth means."""
     classes = config.get("classes")
-    expect(isinstance(classes, list) and classes, "'classes' must be a non-empty list")
+    _expect(isinstance(classes, list) and classes, "'classes' must be a non-empty list")
     seen_ids = set()
     for i, cls in enumerate(classes):
-        expect(isinstance(cls, dict), f"classes[{i}] must be an object")
-        expect(isinstance(cls.get("id"), int) and 0 <= cls["id"] <= 254,
-               f"classes[{i}].id must be an integer in [0, 254]")
-        expect(cls["id"] not in seen_ids, f"duplicate class id {cls['id']}")
+        _expect(isinstance(cls, dict), f"classes[{i}] must be an object")
+        _expect(isinstance(cls.get("id"), int) and 0 <= cls["id"] <= 254,
+                f"classes[{i}].id must be an integer in [0, 254]")
+        _expect(cls["id"] not in seen_ids, f"duplicate class id {cls['id']}")
         seen_ids.add(cls["id"])
-        expect(isinstance(cls.get("name"), str) and cls["name"].strip(),
-               f"classes[{i}].name must be a non-empty string")
-        expect(isinstance(cls.get("color"), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", cls["color"]),
-               f"classes[{i}].color must be a '#rrggbb' string")
+        _expect(isinstance(cls.get("name"), str) and cls["name"].strip(),
+                f"classes[{i}].name must be a non-empty string")
+        _expect(isinstance(cls.get("color"), str)
+                and re.fullmatch(r"#[0-9a-fA-F]{6}", cls["color"]),
+                f"classes[{i}].color must be a '#rrggbb' string")
 
     # High-water mark for class ids (see classes_from_settings). Optional:
     # configs written before the class editor existed have none, and a project
     # opened from one starts its counter above whatever ids it already carries.
     next_class_id = config.get("next_class_id")
     if next_class_id is not None:
-        expect(isinstance(next_class_id, int) and not isinstance(next_class_id, bool)
-               and 0 <= next_class_id <= 255,
-               "'next_class_id' must be an integer in [0, 255]")
-        expect(next_class_id > max(c["id"] for c in classes),
-               "'next_class_id' must be above every id in 'classes', or a new "
-               "class would take an id that is already in use")
+        _expect(isinstance(next_class_id, int) and not isinstance(next_class_id, bool)
+                and 0 <= next_class_id <= 255,
+                "'next_class_id' must be an integer in [0, 255]")
+        _expect(next_class_id > max(c["id"] for c in classes),
+                "'next_class_id' must be above every id in 'classes', or a new "
+                "class would take an id that is already in use")
 
-    split = config.get("split")
-    if split is not None:  # optional, and unused by this build (see above)
-        expect(isinstance(split, dict), "'split' must be an object")
-        ratio = split.get("validation_ratio")
-        expect(isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
-               and 0.0 <= ratio <= MAX_VALIDATION_RATIO,
-               f"'split.validation_ratio' must be a number in "
-               f"[0, {MAX_VALIDATION_RATIO}]")
-        overrides = split.get("overrides")
-        if overrides is not None:
-            expect(isinstance(overrides, dict), "'split.overrides' must be an object")
-            for name, role in overrides.items():
-                expect(isinstance(name, str) and name.strip(),
-                       "'split.overrides' keys must be non-empty image names")
-                expect(role in SPLIT_ROLES,
-                       f"split.overrides['{name}'] must be one of {SPLIT_ROLES}")
 
-    mask_format = config.get("mask_format")
-    if mask_format is not None:  # optional: older configs default to uint8/255
-        expect(isinstance(mask_format, dict), "'mask_format' must be an object")
-        expect(mask_format.get("dtype") in MASK_DTYPES,
-               f"'mask_format.dtype' must be one of {MASK_DTYPES}")
-        nodata = mask_format.get("nodata")
-        expect(isinstance(nodata, int) and not isinstance(nodata, bool),
-               "'mask_format.nodata' must be an integer")
-        info = np.iinfo(mask_format["dtype"])
-        expect(info.min <= nodata <= info.max,
-               f"'mask_format.nodata' ({nodata}) is not representable in "
-               f"{mask_format['dtype']}")
-        # A nodata inside the class range would make unlabeled pixels
-        # indistinguishable from that class on the next read.
-        expect(not (0 <= nodata <= 254),
-               "'mask_format.nodata' must fall outside the class id range "
-               "[0, 254], or unlabeled pixels would read back as that class")
+def _check_split(split):
+    """Unused by this build; validated and round-tripped for the training app."""
+    if split is None:
+        return
+    _expect(isinstance(split, dict), "'split' must be an object")
+    ratio = split.get("validation_ratio")
+    _expect(isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
+            and 0.0 <= ratio <= MAX_VALIDATION_RATIO,
+            f"'split.validation_ratio' must be a number in "
+            f"[0, {MAX_VALIDATION_RATIO}]")
+    overrides = split.get("overrides")
+    if overrides is not None:
+        _expect(isinstance(overrides, dict), "'split.overrides' must be an object")
+        for name, role in overrides.items():
+            _expect(isinstance(name, str) and name.strip(),
+                    "'split.overrides' keys must be non-empty image names")
+            _expect(role in SPLIT_ROLES,
+                    f"split.overrides['{name}'] must be one of {SPLIT_ROLES}")
 
-    paths = config.get("paths")
-    expect(isinstance(paths, dict), "'paths' must be an object")
+
+def _check_mask_format(mask_format):
+    """How labels are stored on disk. Optional: older configs mean uint8/255."""
+    if mask_format is None:
+        return
+    _expect(isinstance(mask_format, dict), "'mask_format' must be an object")
+    _expect(mask_format.get("dtype") in MASK_DTYPES,
+            f"'mask_format.dtype' must be one of {MASK_DTYPES}")
+    nodata = mask_format.get("nodata")
+    _expect(isinstance(nodata, int) and not isinstance(nodata, bool),
+            "'mask_format.nodata' must be an integer")
+    info = np.iinfo(mask_format["dtype"])
+    _expect(info.min <= nodata <= info.max,
+            f"'mask_format.nodata' ({nodata}) is not representable in "
+            f"{mask_format['dtype']}")
+    # A nodata inside the class range would make unlabeled pixels
+    # indistinguishable from that class on the next read.
+    _expect(not (0 <= nodata <= 254),
+            "'mask_format.nodata' must fall outside the class id range "
+            "[0, 254], or unlabeled pixels would read back as that class")
+
+
+def _check_paths(paths):
+    _expect(isinstance(paths, dict), "'paths' must be an object")
     for key in ("images_folder", "masks_user", "masks_ai"):
         value = paths.get(key)
-        expect(isinstance(value, str) and value.strip(), f"'paths.{key}' must be a non-empty string")
-        expect(not os.path.isabs(value), f"'paths.{key}' must be relative to the project root")
+        _expect(isinstance(value, str) and value.strip(),
+                f"'paths.{key}' must be a non-empty string")
+        _expect(not os.path.isabs(value),
+                f"'paths.{key}' must be relative to the project root")
+
+
+def validate_config(config):
+    """Return the config if it matches the schema, else raise ValueError.
+
+    One section per helper, in the order they appear in the file. Each is
+    independently readable, which is what this was not when it was 112 lines of
+    one function and you had to find the section you cared about by counting
+    blank lines.
+    """
+    _expect(isinstance(config, dict), "root must be a JSON object")
+    _expect(isinstance(config.get("project_name"), str) and config["project_name"].strip(),
+            "'project_name' must be a non-empty string")
+    _check_data_profile(config.get("data_profile"))
+    _check_classes(config)
+    _check_split(config.get("split"))
+    _check_mask_format(config.get("mask_format"))
+    _check_paths(config.get("paths"))
     return config
 
 
@@ -485,26 +513,18 @@ def generate_thumbnail(image_path, thumb_path, size=THUMB_SIZE, bands=None):
         scale = size / max(src.width, src.height)
         out_h = max(1, round(src.height * scale))
         out_w = max(1, round(src.width * scale))
-        if bands:
-            idx = [min(max(int(b), 0), src.count - 1) for b in bands][:3]
-        else:
-            idx = list(range(min(3, src.count)))
-        while len(idx) < 3:
-            idx.append(idx[-1] if idx else 0)
+        idx = display_band_indices(bands, src.count)
         data = src.read([i + 1 for i in idx], out_shape=(3, out_h, out_w),
                         resampling=Resampling.average).astype(np.float32)
         nodata = src.nodata if src.nodata is not None else -9999.0
 
+    # The same stretch the labeling pane applies, from the same function --
+    # which is what makes "thumbnails match the panes" a property rather than a
+    # coincidence. Computed on the decimated read, so the limits come from the
+    # pixels actually being drawn.
     valid = np.all(data != nodata, axis=0)
-    rgb = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-    for b in range(3):
-        band = data[b][valid]
-        if band.size:
-            lo, hi = np.percentile(band, (2, 98))
-            if hi <= lo:
-                hi = lo + 1.0
-            rgb[..., b] = (np.clip((data[b] - lo) / (hi - lo), 0.0, 1.0) * 255).astype(np.uint8)
-    rgb[~valid] = 0
+    rgb = np.transpose((stretch_to_unit(data, valid) * 255).astype(np.uint8),
+                       (1, 2, 0))
 
     tmp = thumb_path + ".tmp"
     Image.fromarray(rgb).save(tmp, format="PNG")
