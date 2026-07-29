@@ -214,7 +214,7 @@ export default function LabelerPane({
       // A hidden class is skipped exactly like an unknown one: the pixel keeps
       // its label everywhere else -- on disk, in the counts, to every tool --
       // it is only not drawn.
-      if (!(v in classColors)) continue
+      if (!(v in classColors) || hiddenClasses?.has(v)) continue
       const [r, g, b] = classColors[v]
       const o = i * 4
       imgData.data[o] = r
