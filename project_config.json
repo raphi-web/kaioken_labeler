@@ -82,6 +82,7 @@
       "color": "#ff2fd0"
     }
   ],
+  "next_class_id": 11,
   "split": {
     "validation_ratio": 0.2,
     "overrides": {}
