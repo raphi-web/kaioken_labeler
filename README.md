@@ -156,9 +156,22 @@ python3 backend/test_no_torch.py # nothing in this build imports torch
 `backend/testlib.py` holds the runner they share; a new test file needs
 `from testlib import fail, main` and `sys.exit(main(globals()))`.
 
-The frontend has no test framework, but `frontend/smoke.html` stubs the
-pywebview bridge and drives the real app through real DOM events, which is
-enough to catch a broken tool wiring:
+The frontend has two harnesses, because neither covers the other's ground:
+
+```bash
+cd frontend
+npm test          # vitest: hooks, components, pure functions
+npm run test:watch
+```
+
+Vitest runs under happy-dom, which has **no canvas 2D context** — `src/test-setup.js`
+stubs one so the app can mount, and every drawing call is a no-op. So anything
+about pixels is out of scope there by construction, and an assertion about
+canvas content in a `.test.js` is measuring the stub rather than the app.
+
+That part is covered by `frontend/smoke.html`, which stubs the pywebview bridge
+and drives the real app in a real browser — real canvas, real pointer events,
+real layout:
 
 ```bash
 cd frontend && npx vite &
