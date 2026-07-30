@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+# Tests live under backend/. The wand/SAM tests need a real project at the
+# repo root to copy a fixture from; they self-skip if the project is absent,
+# so we don't need a marker for that.
+testpaths = ["backend"]
+python_files = ["test_*.py"]
+# -ra: short summary of skip reasons (useful when the project isn't checked out)
+# --strict-markers: typo in a marker name should be a session-start error,
+# not a silent no-op
+addopts = ["-ra", "--strict-markers"]

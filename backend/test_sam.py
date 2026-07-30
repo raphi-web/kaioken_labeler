@@ -1,7 +1,5 @@
 """SAM2 must produce the same masks after dropping torch.
 
-Run: python3 backend/test_sam.py
-
 The preprocessing and the final mask upscale used torchvision and
 torch.nn.functional.interpolate; they are numpy and scipy.ndimage.zoom now.
 That is a behaviour-preserving rewrite, not a redesign, so the fixtures in
@@ -11,19 +9,17 @@ shift: scipy's default zoom aligns outermost sample centres, torch's
 align_corners=False aligns cell centres, and only `grid_mode=True` reconciles
 them. Everything still looks plausible if that is wrong -- the masks are just
 subtly off.
+
+The torch import block lives in backend/conftest.py.
 """
 
 import os
-import sys
 
 import numpy as np
+import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from testlib import fail, main  # noqa: E402
-
-from data import SentinelImage  # noqa: E402
-from sam_service import SamService  # noqa: E402
+from data import SentinelImage
+from sam_service import SamService
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -49,7 +45,7 @@ def _service_and_rgb():
     svc = SamService()
     reason = svc.unavailable_reason()
     if reason:
-        fail(f"SAM2 unavailable: {reason}")
+        pytest.fail(f"SAM2 unavailable: {reason}")
     image = SentinelImage(IMAGE, expected_bands=10)
     return svc, image.rgb_composite([0, 1, 2])
 
@@ -59,9 +55,10 @@ def test_no_torch_is_imported():
     svc, rgb = _service_and_rgb()
     svc.set_image(rgb, key="test")
     svc.predict_points([(256, 256, 1)])
+    import sys
     for module in ("torch", "torchvision"):
         if module in sys.modules:
-            fail(f"{module} was imported during a SAM2 round trip")
+            pytest.fail(f"{module} was imported during a SAM2 round trip")
 
 
 def test_preprocessing_matches_torchvision():
@@ -71,13 +68,13 @@ def test_preprocessing_matches_torchvision():
     golden = np.load(GOLDEN)
 
     if list(pre.shape) != list(golden["pre_shape"]):
-        fail(f"preprocessed shape {pre.shape} != {tuple(golden['pre_shape'])}")
+        pytest.fail(f"preprocessed shape {pre.shape} != {tuple(golden['pre_shape'])}")
     stats = np.array([pre.min(), pre.max(), pre.mean(), pre.std()],
                      dtype=np.float64)
     if not np.allclose(stats, golden["pre_stats"], atol=1e-4):
-        fail(f"preprocessed stats {stats} != {golden['pre_stats']}")
+        pytest.fail(f"preprocessed stats {stats} != {golden['pre_stats']}")
     if not np.allclose(pre[0, :, :4, :4], golden["pre_corner"], atol=1e-4):
-        fail("preprocessed corner pixels differ — the resize is misaligned")
+        pytest.fail("preprocessed corner pixels differ — the resize is misaligned")
 
 
 def test_masks_match_the_torch_implementation():
@@ -102,10 +99,4 @@ def test_masks_match_the_torch_implementation():
         if abs(score - want_score) > 1e-5:
             problems.append(f"{name}: score {score} != {want_score}")
     if problems:
-        fail("; ".join(problems))
-
-
-
-
-if __name__ == "__main__":
-    sys.exit(main(globals()))
+        pytest.fail("; ".join(problems))

@@ -155,20 +155,25 @@ here never quietly reconfigures something set up elsewhere.
 
 ## Tests
 
-Plain scripts, no framework. None of them write to `label_raster/`: the ones
-that only read it write their output to a temp directory, and the ones that need
-to edit labels work on a scratch copy of the whole project.
+Pytest for the backend, vitest for the frontend. Backend tests that need the
+project copy a one-image scratch project first, then clean it up — none of
+them write to `label_raster/`.
 
 ```bash
-python3 backend/test_masks.py    # mask round-trip, and the display stretch
-python3 backend/test_sam.py      # SAM2 still matches the torch implementation
-python3 backend/test_wand.py     # the wand's invariants, both distance sources
-python3 backend/test_project.py  # the class palette: ids, presets, deletion
-python3 backend/test_no_torch.py # nothing in this build imports torch
+# Everything (backend + frontend)
+make test
+
+# Just the backend
+python3 -m pytest backend/
+
+# Just the frontend
+cd frontend && npm test
 ```
 
-`backend/testlib.py` holds the runner they share; a new test file needs
-`from testlib import fail, main` and `sys.exit(main(globals()))`.
+`backend/conftest.py` carries the shared fixtures (`scratch_project`,
+`scratch_api`) and installs the SAM2 import block at session start. A new
+backend test file is just a `test_*.py` next to the others — pytest
+discovers it.
 
 The frontend has two harnesses, because neither covers the other's ground:
 

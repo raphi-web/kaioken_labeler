@@ -1,7 +1,5 @@
 """Checks for data.py: label-mask I/O, and the display transform.
 
-Run: python backend/test_masks.py
-
 The app works in uint8 label space (0..254 classes, 255 unlabeled) while this
 project's masks live on disk as int32 GeoTIFFs with nodata=-9999. The old
 reader did `src.read(1).astype(np.uint8)`, which wraps -9999 to 49 -- a class
@@ -15,17 +13,13 @@ by coincidence; these pin the properties both callers depend on.
 """
 
 import os
-import sys
 import tempfile
 
 import numpy as np
+import pytest
 import rasterio
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from testlib import fail, main  # noqa: E402
-
-from data import (UNLABELED, display_band_indices, read_label_mask,  # noqa: E402
+from data import (UNLABELED, display_band_indices, read_label_mask,
                   stretch_limits, stretch_to_unit, write_label_mask)
 
 LABEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -45,11 +39,11 @@ def test_nodata_reads_as_unlabeled_not_49():
     mask = read_label_mask(path)
     nodata_px = raw == -9999
     if not nodata_px.any():
-        fail("fixture 00.tif has no -9999 pixels; it cannot exercise this case")
+        pytest.fail("fixture 00.tif has no -9999 pixels; it cannot exercise this case")
     if not (mask[nodata_px] == UNLABELED).all():
-        fail("nodata pixels did not read as UNLABELED")
+        pytest.fail("nodata pixels did not read as UNLABELED")
     if (mask == 49).any() and not (raw == 49).any():
-        fail("nodata leaked through as class 49 (the uint8 wrap bug)")
+        pytest.fail("nodata leaked through as class 49 (the uint8 wrap bug)")
 
 
 def test_class_values_survive_the_read():
@@ -59,19 +53,19 @@ def test_class_values_survive_the_read():
     mask = read_label_mask(path)
     labeled = raw != -9999
     if not (mask[labeled] == raw[labeled].astype(np.uint8)).all():
-        fail("class ids changed while reading")
+        pytest.fail("class ids changed while reading")
 
 
 def test_missing_file_reads_as_none():
     if read_label_mask(os.path.join(LABEL_DIR, "does-not-exist.tif")) is not None:
-        fail("a missing mask must read as None so callers fall back to unlabeled")
+        pytest.fail("a missing mask must read as None so callers fall back to unlabeled")
 
 
 def test_round_trip_preserves_every_real_label_file():
     """Read -> write -> read must reproduce dtype, nodata and every pixel."""
     names = sorted(n for n in os.listdir(LABEL_DIR) if n.endswith(".tif"))
     if not names:
-        fail(f"no label files found in {LABEL_DIR}")
+        pytest.fail(f"no label files found in {LABEL_DIR}")
     for name in names:
         path = os.path.join(LABEL_DIR, name)
         with rasterio.open(path) as src:
@@ -86,14 +80,14 @@ def test_round_trip_preserves_every_real_label_file():
             with rasterio.open(out) as dst:
                 written = dst.read(1)
                 if dst.dtypes[0] != src_dtype:
-                    fail(f"{name}: dtype {dst.dtypes[0]} != original {src_dtype}")
+                    pytest.fail(f"{name}: dtype {dst.dtypes[0]} != original {src_dtype}")
                 if dst.nodata != src_nodata:
-                    fail(f"{name}: nodata {dst.nodata} != original {src_nodata}")
+                    pytest.fail(f"{name}: nodata {dst.nodata} != original {src_nodata}")
                 if dst.crs != crs or dst.transform != transform:
-                    fail(f"{name}: georeferencing changed")
+                    pytest.fail(f"{name}: georeferencing changed")
             if not np.array_equal(written, original):
                 diff = int((written != original).sum())
-                fail(f"{name}: {diff} pixels changed through the round trip")
+                pytest.fail(f"{name}: {diff} pixels changed through the round trip")
 
 
 def test_uint8_format_still_writes_255_nodata():
@@ -104,11 +98,11 @@ def test_uint8_format_still_writes_255_nodata():
         write_label_mask(out, mask, None, SYNTHETIC_TRANSFORM, None)
         with rasterio.open(out) as src:
             if src.dtypes[0] != "uint8":
-                fail(f"default format wrote {src.dtypes[0]}, expected uint8")
+                pytest.fail(f"default format wrote {src.dtypes[0]}, expected uint8")
             if src.nodata != UNLABELED:
-                fail(f"default format wrote nodata {src.nodata}, expected {UNLABELED}")
+                pytest.fail(f"default format wrote nodata {src.nodata}, expected {UNLABELED}")
         if not np.array_equal(read_label_mask(out), mask):
-            fail("uint8 round trip changed the mask")
+            pytest.fail("uint8 round trip changed the mask")
 
 
 def test_out_of_range_values_read_as_unlabeled():
@@ -123,10 +117,7 @@ def test_out_of_range_values_read_as_unlabeled():
         mask = read_label_mask(out)
         expected = np.array([[3, UNLABELED, UNLABELED, UNLABELED]], dtype=np.uint8)
         if not np.array_equal(mask, expected):
-            fail(f"out-of-range handling wrong: got {mask.tolist()}")
-
-
-
+            pytest.fail(f"out-of-range handling wrong: got {mask.tolist()}")
 
 
 # ---------- the display transform ----------
@@ -140,9 +131,9 @@ def test_display_bands_always_yield_three_usable_indices():
                     [99, -3, 1], [0, 1, 2, 3], (1, 1, 1)):
             idx = display_band_indices(raw, count)
             if len(idx) != 3:
-                fail(f"count={count} raw={raw}: got {len(idx)} indices, {idx}")
+                pytest.fail(f"count={count} raw={raw}: got {len(idx)} indices, {idx}")
             if not all(isinstance(i, int) and 0 <= i < count for i in idx):
-                fail(f"count={count} raw={raw}: out of range {idx}")
+                pytest.fail(f"count={count} raw={raw}: out of range {idx}")
 
 
 def test_the_stretch_is_bounded_and_blanks_nodata():
@@ -155,11 +146,11 @@ def test_the_stretch_is_bounded_and_blanks_nodata():
     valid[0, :] = False  # a nodata row
     out = stretch_to_unit(stack, valid)
     if not np.isfinite(out).all():
-        fail("a constant band produced non-finite output")
+        pytest.fail("a constant band produced non-finite output")
     if out.min() < 0.0 or out.max() > 1.0:
-        fail(f"output left [0, 1]: {out.min()}..{out.max()}")
+        pytest.fail(f"output left [0, 1]: {out.min()}..{out.max()}")
     if out[:, 0, :].any():
-        fail("nodata pixels are not blank")
+        pytest.fail("nodata pixels are not blank")
 
 
 def test_the_stretch_ignores_nodata_when_choosing_its_limits():
@@ -172,10 +163,10 @@ def test_the_stretch_ignores_nodata_when_choosing_its_limits():
     lo_masked, hi_masked = stretch_limits(band, valid)
     lo_all, _ = stretch_limits(band, np.ones_like(valid))
     if lo_masked[0] <= lo_all[0]:
-        fail(f"nodata did not drag the unmasked limit down: "
-             f"masked {lo_masked[0]}, unmasked {lo_all[0]}")
+        pytest.fail(f"nodata did not drag the unmasked limit down: "
+                    f"masked {lo_masked[0]}, unmasked {lo_all[0]}")
     if not np.isclose(lo_masked[0], 1000.0):
-        fail(f"masked limits should see only the real ground, got {lo_masked[0]}")
+        pytest.fail(f"masked limits should see only the real ground, got {lo_masked[0]}")
 
 
 def test_a_degenerate_band_does_not_divide_by_zero():
@@ -183,10 +174,6 @@ def test_a_degenerate_band_does_not_divide_by_zero():
     valid = np.ones((4, 4), dtype=bool)
     lo, hi = stretch_limits(flat, valid)
     if hi[0] <= lo[0]:
-        fail("the hi > lo guard did not fire on a constant band")
+        pytest.fail("the hi > lo guard did not fire on a constant band")
     if not np.isfinite(stretch_to_unit(flat, valid)).all():
-        fail("a constant band still produced non-finite output")
-
-
-if __name__ == "__main__":
-    sys.exit(main(globals()))
+        pytest.fail("a constant band still produced non-finite output")
