@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, fromBase64, toBase64 } from './bridge'
-import { CLASSES, ERASER_KEY, UNLABELED, classIdForKey, hexToRgb } from './constants'
+import { CLASSES, ERASER_KEY, UNLABELED, classIdForKey } from './constants'
+import { classColorsMap } from './colors'
 import ClassPalette from './components/ClassPalette'
 import ContextMenu from './components/ContextMenu'
 import LabelerPane from './components/LabelerPane'
@@ -76,7 +77,11 @@ export default function App() {
   }
 
   const classes = project?.classes ?? CLASSES
-  const classColors = Object.fromEntries(classes.map((c) => [c.id, hexToRgb(c.color)]))
+  // Memoized on `classes` so a wheel tick or an unrelated state change does
+  // not rebuild the label overlay's color table. The redraw effect in
+  // LabelerPane lists `classColors` in its deps, and rebuilding it per
+  // render tears down and rebuilds the overlay pixel-by-pixel.
+  const classColors = useMemo(() => classColorsMap(classes), [classes])
 
   // Install a backend image payload (base image + its persisted labels) and
   // reset all per-image UI state.
