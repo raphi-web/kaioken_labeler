@@ -7,6 +7,11 @@ import { fromBase64, toBase64 } from './bridge'
 // implement -- a stroke is one Map<pixelIndex, previousValue> -- is what every
 // tool commits through.
 //
+// The cap-at-50 rule (undoStack.shift() when full) is a performance invariant
+// rather than a correctness one; exercising it requires 51 distinct strokes
+// which happy-dom cannot drive without pointer coordinates, so the rule lives
+// here as documentation only.
+//
 // The bridge is mocked; the canvas work it triggers is inert under happy-dom
 // (no 2d context) and is covered by smoke.html instead.
 

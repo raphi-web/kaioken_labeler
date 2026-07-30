@@ -24,6 +24,9 @@ export function fromBase64(b64) {
 // Encode a Uint8Array as base64 (chunked to stay under argument limits).
 export function toBase64(bytes) {
   let binary = ''
+  // 32 KB per chunk: String.fromCharCode.apply blows the V8 call-stack limit
+  // on a multi-MB label buffer (a 512x512 image is 262,144 bytes -- eight
+  // chunks -- so anything smaller than this would never exercise the seam).
   const chunk = 0x8000
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))

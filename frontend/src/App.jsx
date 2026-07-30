@@ -19,9 +19,6 @@ export default function App() {
   const [labelsVersion, setLabelsVersion] = useState(0) // bumped on undo
   const [undoDepth, setUndoDepth] = useState(0)
   const [redoDepth, setRedoDepth] = useState(0)
-  // Operation feedback (success + errors). The toolbar toast was removed; the
-  // setters stay so the plumbing is here if feedback is resurfaced later.
-  const [, setMessage] = useState('')
   const [view, setView] = useState(null) // zoom/pan: {scale, x, y}
   const [project, setProject] = useState(null) // {root, name, images, active, classes}
   const [setup, setSetup] = useState(null) // {root, defaults} while the creation dialog is open
@@ -284,12 +281,8 @@ export default function App() {
   // SAM2 snap: segment from the pending include/exclude clicks and return
   // polygon vertices (image coords) to preview; null on error/no object.
   async function handleSamSnap(points) {
-    setMessage('')
     const res = await api('sam_snap', points.map((p) => [p.x, p.y, p.label]))
-    if (!res.ok) {
-      if (res.error) setMessage(res.error)
-      return null
-    }
+    if (!res.ok) return null
     return res.polygons
   }
 
@@ -299,10 +292,7 @@ export default function App() {
   // unpack it into the byte-per-pixel form the preview and commit both want.
   async function handleWandSelect(samples, options) {
     const res = await api('wand_select', samples.map((p) => [p.x, p.y]), options)
-    if (!res.ok) {
-      if (res.error) setMessage(res.error)
-      return null
-    }
+    if (!res.ok) return null
     const packed = fromBase64(res.mask)
     const mask = new Uint8Array(res.width * res.height)
     for (let i = 0; i < mask.length; i++) {
@@ -326,15 +316,11 @@ export default function App() {
     if (!diff.size) return
     recordUndo(diff)
     setLabelsVersion((v) => v + 1)
-    setMessage(`Labels cleared (${diff.size.toLocaleString()} px)`)
     await pushLabels()
   }
 
   async function handleExport(method) {
-    setMessage('')
-    const res = await api(method)
-    if (res.ok) setMessage(`Saved: ${res.path}`)
-    else if (res.error) setMessage(res.error)
+    await api(method)
   }
 
   // Permanently remove an image (and its mask/thumbnail) from disk. When the
@@ -356,7 +342,6 @@ export default function App() {
     })
     if ('image' in res) {
       applyImagePayload(res.image)
-      if (res.image_error) setMessage(res.image_error)
     }
   }
 
@@ -364,18 +349,11 @@ export default function App() {
     setProject(res.project)
     setThumbs({})
     applyImagePayload(res.image)
-    if (res.image_error) setMessage(res.image_error)
-    else if (!res.project.images.length) setMessage('Project opened — no images found in folder')
-    else setMessage(res.created ? `Project created: ${res.project.name}` : `Project opened: ${res.project.name}`)
   }
 
   async function handleNewProject() {
-    setMessage('')
     const res = await api('new_project')
-    if (!res.ok) {
-      if (res.error) setMessage(res.error)
-      return
-    }
+    if (!res.ok) return
     if (res.needs_setup) {
       // No config in that folder yet: collect the data profile first.
       setSetupError('')
@@ -388,12 +366,8 @@ export default function App() {
   // Build a project by tiling one big GeoTIFF: same setup dialog, plus the
   // tile geometry. Nothing is written until the dialog is confirmed.
   async function handleNewFromGeotiff() {
-    setMessage('')
     const res = await api('new_project_from_geotiff')
-    if (!res.ok) {
-      if (res.error) setMessage(res.error)
-      return
-    }
+    if (!res.ok) return
     setSetupError('')
     setSetup({ mode: 'geotiff', source: res.source, defaults: res.defaults })
   }
@@ -464,12 +438,9 @@ export default function App() {
           // the local copy would push the deleted class's pixels straight back
           // on the next stroke.
           applyImagePayload(res.image)
-          setMessage(`Settings saved — unlabeled ${res.cleared.pixels.toLocaleString()} px `
-            + `across ${res.cleared.images} image${res.cleared.images === 1 ? '' : 's'}`)
         } else {
           // Only the display bands changed: swap the base RGB, keep labels/view.
           if (res.image) setImage((img) => (img ? { ...img, png: res.image.png } : img))
-          setMessage('Settings saved')
         }
       }
     } else {
@@ -479,12 +450,8 @@ export default function App() {
 
   async function handleSelectImage(name) {
     if (name === image?.name) return
-    setMessage('')
     const res = await api('load_image', name)
-    if (!res.ok) {
-      if (res.error) setMessage(res.error)
-      return
-    }
+    if (!res.ok) return
     applyImagePayload(res.image)
     setProject((p) => (p ? { ...p, active: name } : p))
   }
