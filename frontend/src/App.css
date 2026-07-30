@@ -1084,6 +1084,28 @@ div.modal-error {
   font-size: 13px;
 }
 
+/* Toast variant: a transient status message, not an error indicator.
+   Reuses the floating-error shape but drops the danger colour, adds a
+   fade-in/out, and respects the leaving-state the React component uses
+   to keep the element mounted while the fade-out runs. */
+.floating-error.toast {
+  border-color: var(--surface-1);
+  max-width: 70%;
+  text-align: center;
+  animation: toast-in 150ms ease-out;
+}
+.floating-error.toast--leaving {
+  animation: toast-out 250ms ease-in forwards;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
 /* ---------- accuracy report ---------- */
 
 .modal.wide {

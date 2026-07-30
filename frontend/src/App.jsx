@@ -7,6 +7,7 @@ import ContextMenu from './components/ContextMenu'
 import LabelerPane from './components/LabelerPane'
 import ProjectSetup from './components/ProjectSetup'
 import ThumbnailStrip from './components/ThumbnailStrip'
+import Toast from './components/Toast'
 import Toolbar from './components/Toolbar'
 import './App.css'
 
@@ -31,6 +32,12 @@ export default function App() {
   const [menu, setMenu] = useState(null) // {name, x, y} while a thumbnail menu is open
   const [menuError, setMenuError] = useState('')
   const [samAvailable, setSamAvailable] = useState(false) // Efficient-SAM2 files present
+  // Transient status messages ("Labels cleared", "Project opened", etc.) shown
+  // as a fading toast at the bottom-center of the window. Single-message at a
+  // time: a new showToast replaces the previous, which keeps the UI honest
+  // and avoids any queue management.
+  const [toast, setToast] = useState('')
+  const showToast = (msg) => setToast(msg)
   const labelsRef = useRef(null)
   const undoStack = useRef([]) // Map<pixelIndex, previousValue> per stroke/fill
   const redoStack = useRef([]) // inverse diffs of undone steps
@@ -282,7 +289,10 @@ export default function App() {
   // polygon vertices (image coords) to preview; null on error/no object.
   async function handleSamSnap(points) {
     const res = await api('sam_snap', points.map((p) => [p.x, p.y, p.label]))
-    if (!res.ok) return null
+    if (!res.ok) {
+      if (res.error) showToast(res.error)
+      return null
+    }
     return res.polygons
   }
 
@@ -292,7 +302,10 @@ export default function App() {
   // unpack it into the byte-per-pixel form the preview and commit both want.
   async function handleWandSelect(samples, options) {
     const res = await api('wand_select', samples.map((p) => [p.x, p.y]), options)
-    if (!res.ok) return null
+    if (!res.ok) {
+      if (res.error) showToast(res.error)
+      return null
+    }
     const packed = fromBase64(res.mask)
     const mask = new Uint8Array(res.width * res.height)
     for (let i = 0; i < mask.length; i++) {
@@ -316,11 +329,14 @@ export default function App() {
     if (!diff.size) return
     recordUndo(diff)
     setLabelsVersion((v) => v + 1)
+    showToast(`Labels cleared (${diff.size.toLocaleString()} px)`)
     await pushLabels()
   }
 
   async function handleExport(method) {
-    await api(method)
+    const res = await api(method)
+    if (res.ok) showToast(`Saved: ${res.path}`)
+    else if (res.error) showToast(res.error)
   }
 
   // Permanently remove an image (and its mask/thumbnail) from disk. When the
@@ -342,6 +358,7 @@ export default function App() {
     })
     if ('image' in res) {
       applyImagePayload(res.image)
+      if (res.image_error) showToast(res.image_error)
     }
   }
 
@@ -349,11 +366,17 @@ export default function App() {
     setProject(res.project)
     setThumbs({})
     applyImagePayload(res.image)
+    if (res.image_error) showToast(res.image_error)
+    else if (!res.project.images.length) showToast('Project opened — no images found in folder')
+    else showToast(res.created ? `Project created: ${res.project.name}` : `Project opened: ${res.project.name}`)
   }
 
   async function handleNewProject() {
     const res = await api('new_project')
-    if (!res.ok) return
+    if (!res.ok) {
+      if (res.error) showToast(res.error)
+      return
+    }
     if (res.needs_setup) {
       // No config in that folder yet: collect the data profile first.
       setSetupError('')
@@ -367,7 +390,10 @@ export default function App() {
   // tile geometry. Nothing is written until the dialog is confirmed.
   async function handleNewFromGeotiff() {
     const res = await api('new_project_from_geotiff')
-    if (!res.ok) return
+    if (!res.ok) {
+      if (res.error) showToast(res.error)
+      return
+    }
     setSetupError('')
     setSetup({ mode: 'geotiff', source: res.source, defaults: res.defaults })
   }
@@ -438,9 +464,12 @@ export default function App() {
           // the local copy would push the deleted class's pixels straight back
           // on the next stroke.
           applyImagePayload(res.image)
+          showToast(`Settings saved — unlabeled ${res.cleared.pixels.toLocaleString()} px `
+            + `across ${res.cleared.images} image${res.cleared.images === 1 ? '' : 's'}`)
         } else {
           // Only the display bands changed: swap the base RGB, keep labels/view.
           if (res.image) setImage((img) => (img ? { ...img, png: res.image.png } : img))
+          showToast('Settings saved')
         }
       }
     } else {
@@ -451,7 +480,10 @@ export default function App() {
   async function handleSelectImage(name) {
     if (name === image?.name) return
     const res = await api('load_image', name)
-    if (!res.ok) return
+    if (!res.ok) {
+      if (res.error) showToast(res.error)
+      return
+    }
     applyImagePayload(res.image)
     setProject((p) => (p ? { ...p, active: name } : p))
   }
@@ -535,6 +567,7 @@ export default function App() {
         </ContextMenu>
       )}
       {menuError && <div className="floating-error">{menuError}</div>}
+      <Toast message={toast} onDismiss={() => setToast('')} />
       {setup && (
         <ProjectSetup
           mode={setup.mode}
