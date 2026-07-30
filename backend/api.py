@@ -694,6 +694,73 @@ class Api:
         result["project"] = self.get_project()
         return result
 
+    def clear_image_labels(self, name):
+        """Reset every labeled pixel of one image to UNLABELED.
+
+        Per-image counterpart to the toolbar's Clear Labels: same action,
+        on a different image. The user_mask is rewritten with everything
+        != UNLABELED turned to UNLABELED; the in-memory buffer is reset if
+        this is the active image so a subsequent stroke does not bring the
+        cleared pixels back.
+
+        Returns the cleared pixel count and a flag for whether the active
+        image was affected, so the frontend can reload its label buffer.
+        """
+        if self._project is None:
+            return {"ok": False, "error": "No project open"}
+        if name not in self._project.list_images():
+            return {"ok": False, "error": f"Unknown image: {name}"}
+
+        is_active = name == self._image_name
+        pixels = 0
+        with self._lock:
+            if is_active and self._labels is not None:
+                # Active-image branch: the buffer is in memory; mutate in
+                # place and write through. Mirrors how handleClearLabels
+                # in App.jsx mutates before pushLabels().
+                labels = self._labels
+                hit = labels != UNLABELED
+                pixels = int(hit.sum())
+                if pixels:
+                    labels[hit] = UNLABELED
+                    user_path, _ = self._project.mask_paths(name)
+                    write_label_mask(user_path, labels, self._image.crs,
+                                     self._image.transform,
+                                     self._project.mask_format)
+                self._note_label_count(name)
+            else:
+                # Non-active branch: read the saved mask, modify, write.
+                user_path, _ = self._project.mask_paths(name)
+                existing = read_label_mask(user_path)
+                if existing is None:
+                    self._label_counts[name] = self._mask_stats(None)
+                    return {"ok": True, "pixels": 0, "active": is_active}
+                hit = existing != UNLABELED
+                pixels = int(hit.sum())
+                if pixels:
+                    existing[hit] = UNLABELED
+                    # Geometry for non-active images: prefer the dirty-geo
+                    # cache (covers edits not yet autosaved), then the saved
+                    # mask's georef, then the image file's. Last resort is
+                    # None/None; rasterio handles that on write.
+                    if name in self._dirty_geo:
+                        crs, transform = self._dirty_geo[name]
+                    else:
+                        crs, transform = None, None
+                        try:
+                            with rasterio.open(user_path) as src:
+                                crs, transform = src.crs, src.transform
+                        except Exception:
+                            try:
+                                with rasterio.open(self._project.image_path(name)) as src:
+                                    crs, transform = src.crs, src.transform
+                            except Exception:
+                                pass
+                    write_label_mask(user_path, existing, crs, transform,
+                                     self._project.mask_format)
+                self._label_counts[name] = self._mask_stats(existing)
+        return {"ok": True, "pixels": pixels, "active": is_active}
+
     def load_image(self, name):
         """Make an image of the project active in both panes.
 

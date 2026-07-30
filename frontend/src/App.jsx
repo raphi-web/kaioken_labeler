@@ -362,6 +362,25 @@ export default function App() {
     }
   }
 
+  // Reset every labeled pixel of one image to UNLABELED. Per-image counterpart
+  // to the toolbar's Clear Labels: same action, different image. If the
+  // cleared image is active, the backend has already reset the in-memory
+  // buffer; we re-fetch the payload so the local copy mirrors it, and a
+  // subsequent stroke does not bring the cleared pixels back.
+  async function handleClearImageLabels(name) {
+    setMenuError('')
+    const res = await api('clear_image_labels', name)
+    if (!res.ok) {
+      if (res.error) showToast(res.error)
+      return
+    }
+    if (res.active && image?.name === name) {
+      const refreshed = await api('get_image')
+      applyImagePayload(refreshed)
+    }
+    showToast(`Cleared ${res.pixels.toLocaleString()} px from ${name}`)
+  }
+
   function installProject(res) {
     setProject(res.project)
     setThumbs({})
@@ -554,6 +573,16 @@ export default function App() {
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
           <span className="context-title">{menu.name}</span>
+          <button
+            className="danger"
+            onClick={() => {
+              if (window.confirm(`Clear all labels on "${menu.name}"? This writes a blank mask and cannot be undone.`)) {
+                handleClearImageLabels(menu.name)
+              }
+            }}
+          >
+            Clear all labels
+          </button>
           <button
             className="danger"
             onClick={() => {
