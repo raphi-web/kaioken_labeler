@@ -6,28 +6,15 @@ Usage: python backend/main.py [path/to/image.tiff | path/to/project_dir]
 import os
 import sys
 
-if sys.platform.startswith("linux"):
-    _bundled_qt_themes = {"gtk3", "xdgdesktopportal"}
-    _requested = os.environ.get("QT_QPA_PLATFORMTHEME", "")
-    if not set(_requested.split(":")) & _bundled_qt_themes:
-        os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal:gtk3"
-
 import webview
 
-if getattr(sys, "frozen", False):
-    PROJECT_ROOT = sys._MEIPASS
-else:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from api import Api
 
 FRONTEND = os.path.join(PROJECT_ROOT, "frontend", "dist", "index.html")
 DEFAULT_IMAGE = os.path.join(PROJECT_ROOT, "00.tiff")
-# This fork ships a project_config.json at the repo root (input_images/ +
-# label_raster/, an 11-class land-cover palette), so launching with no argument
-# opens that project instead of the single demo image. The palette itself is
-# whatever that config says -- see project.CLASS_PRESETS.
 DEFAULT_PROJECT = PROJECT_ROOT
 
 
