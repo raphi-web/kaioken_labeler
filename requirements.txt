@@ -19,7 +19,5 @@ onnxruntime>=1.20
 scipy>=1.10
 opencv-python-headless>=4.8
 
-# Packaging only (./build_app.sh); not imported by the app:  pyinstaller
-
 # Linux renderer note: pywebview uses GTK/WebKit2 (PyGObject + gir1.2-webkit2-4.1)
 # if available; otherwise install the Qt extra:  pip install pywebview[qt]

@@ -25,7 +25,6 @@ def _default_target():
     return None, DEFAULT_IMAGE if os.path.exists(DEFAULT_IMAGE) else None
 
 
-
 def main():
     if not os.path.exists(FRONTEND):
         sys.exit("Frontend not built. Run: cd frontend && npm install && npm run build")

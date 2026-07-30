@@ -10,8 +10,8 @@ the other training-only packages raise ImportError, then drives a real labeling
 session: open the project, load an image, paint, autosave, read back, and run a
 SAM2 snap.
 
-Anything that reaches for torch fails loudly here instead of quietly bloating
-the next PyInstaller bundle by ~2 GB.
+Anything that reaches for torch fails loudly here instead of quietly dragging
+~2 GB of training-only dependencies back into the install.
 """
 
 import base64
