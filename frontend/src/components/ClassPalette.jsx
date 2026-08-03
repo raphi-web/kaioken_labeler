@@ -28,7 +28,7 @@ function useClassCounts(labels, labelsVersion) {
 
 export default function ClassPalette({
   classes, tool, setTool, onSelectClass, hiddenClasses, onToggleVisible,
-  labels, labelsVersion,
+  lockedClasses, onToggleLocked, labels, labelsVersion,
 }) {
   const counts = useClassCounts(labels, labelsVersion)
   const [width, setWidth] = useState(DEFAULT_WIDTH)
@@ -66,13 +66,14 @@ export default function ClassPalette({
           const active = !tool.eraser && tool.classId === c.id
           const count = counts.get(c.id) ?? 0
           const hidden = !!hiddenClasses?.has(c.id)
+          const locked = !!lockedClasses?.has(c.id)
           // A row rather than a button, because it holds two of them: a button
           // inside a button is invalid, and a click on the eye would select the
           // class on its way up.
           return (
             <div
               key={c.id}
-              className={`class-item${active ? ' active' : ''}${hidden ? ' hidden' : ''}`}
+              className={`class-item${active ? ' active' : ''}${hidden ? ' hidden' : ''}${locked ? ' locked' : ''}`}
             >
               <button
                 className="class-select"
@@ -96,6 +97,15 @@ export default function ClassPalette({
                   ? `${c.name} is hidden in the labeler — click to show it`
                   : `Hide ${c.name} in the labeler (its labels are kept)`}
                 onClick={() => onToggleVisible(c.id)}
+              />
+              <button
+                className={`class-lock${locked ? ' off' : ''}`}
+                aria-label={`${locked ? 'Unlock' : 'Lock'} ${c.name}`}
+                aria-pressed={locked}
+                title={locked
+                  ? `${c.name} is locked — click to allow editing`
+                  : `Lock ${c.name} to prevent editing or overwriting`}
+                onClick={() => onToggleLocked(c.id)}
               />
             </div>
           )

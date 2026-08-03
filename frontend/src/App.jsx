@@ -59,9 +59,20 @@ export default function App() {
   // them. Session-only, and deliberately not written to project_config.json,
   // which is shared with the training app.
   const [hiddenClasses, setHiddenClasses] = useState(() => new Set())
+  // Locked classes are protected from all label writes for the session. Like
+  // visibility, this is deliberately session-only and does not alter labels.
+  const [lockedClasses, setLockedClasses] = useState(() => new Set())
 
   function toggleClassVisible(id) {
     setHiddenClasses((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
+  }
+
+  function toggleClassLocked(id) {
+    setLockedClasses((prev) => {
       const next = new Set(prev)
       if (!next.delete(id)) next.add(id)
       return next
@@ -321,7 +332,7 @@ export default function App() {
     if (!labels) return
     const diff = new Map()
     for (let i = 0; i < labels.length; i++) {
-      if (labels[i] !== UNLABELED) {
+      if (labels[i] !== UNLABELED && !lockedClasses.has(labels[i])) {
         diff.set(i, labels[i])
         labels[i] = UNLABELED
       }
@@ -536,6 +547,8 @@ export default function App() {
           onSelectClass={selectClass}
           hiddenClasses={hiddenClasses}
           onToggleVisible={toggleClassVisible}
+          lockedClasses={lockedClasses}
+          onToggleLocked={toggleClassLocked}
           labels={labelsRef.current}
           labelsVersion={labelsVersion}
         />
@@ -552,6 +565,7 @@ export default function App() {
           onWandSelect={handleWandSelect}
           classColors={classColors}
           classes={classes}
+          lockedClasses={lockedClasses}
           hiddenClasses={hiddenClasses}
           fitRef={fitRef}
           samAvailable={samAvailable}

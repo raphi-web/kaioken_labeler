@@ -13,3 +13,4 @@
 /.thumbnails/
 .code-graph.json
 __pycache__/
+/.hermes/

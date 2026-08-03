@@ -25,6 +25,7 @@ function labels() {
 function show({ hidden = [], tool = { classId: 0, eraser: false } } = {}) {
   const onSelectClass = vi.fn()
   const onToggleVisible = vi.fn()
+  const onToggleLocked = vi.fn()
   render(<ClassPalette
     classes={CLASSES}
     tool={tool}
@@ -32,10 +33,12 @@ function show({ hidden = [], tool = { classId: 0, eraser: false } } = {}) {
     onSelectClass={onSelectClass}
     hiddenClasses={new Set(hidden)}
     onToggleVisible={onToggleVisible}
+    lockedClasses={new Set()}
+    onToggleLocked={onToggleLocked}
     labels={labels()}
     labelsVersion={1}
   />)
-  return { onSelectClass, onToggleVisible }
+  return { onSelectClass, onToggleVisible, onToggleLocked }
 }
 
 const eyes = () => document.querySelectorAll('.class-eye')
@@ -48,6 +51,7 @@ describe('the class rows', () => {
     // The eraser is a row too, so there is one more row than there are toggles.
     expect(rows()).toHaveLength(CLASSES.length + 1)
     expect(document.querySelector('.class-item.eraser .class-eye')).toBe(null)
+    expect(document.querySelectorAll('.class-lock')).toHaveLength(CLASSES.length)
   })
 
   it('reports which class was picked', () => {
@@ -61,6 +65,13 @@ describe('the class rows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Hide Water' }))
     expect(onToggleVisible).toHaveBeenCalledWith(7)
     // The eye sits inside the row; a click on it must not also select.
+    expect(onSelectClass).not.toHaveBeenCalled()
+  })
+
+  it('reports which class was locked, without picking it', () => {
+    const { onToggleLocked, onSelectClass } = show()
+    fireEvent.click(screen.getByRole('button', { name: 'Lock Water' }))
+    expect(onToggleLocked).toHaveBeenCalledWith(7)
     expect(onSelectClass).not.toHaveBeenCalled()
   })
 })
@@ -93,5 +104,28 @@ describe('the hidden state', () => {
     show()
     const road = [...rows()].find((r) => r.textContent.includes('Road'))
     expect(road.querySelector('.class-count').className).toContain('empty')
+  })
+})
+
+describe('the locked state', () => {
+  it('marks a locked row and offers the inverse action', () => {
+    const onToggleLocked = vi.fn()
+    render(<ClassPalette
+      classes={CLASSES}
+      tool={{ classId: 0, eraser: false }}
+      setTool={vi.fn()}
+      onSelectClass={vi.fn()}
+      hiddenClasses={new Set()}
+      onToggleVisible={vi.fn()}
+      lockedClasses={new Set([1])}
+      onToggleLocked={onToggleLocked}
+      labels={labels()}
+      labelsVersion={1}
+    />)
+    const road = [...rows()].find((r) => r.textContent.includes('Road'))
+    expect(road.className).toContain('locked')
+    expect(screen.getByRole('button', { name: 'Unlock Road' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock Road' }))
+    expect(onToggleLocked).toHaveBeenCalledWith(1)
   })
 })

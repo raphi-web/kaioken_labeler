@@ -83,7 +83,7 @@ function makeCrosshairCursor(color) {
 // the app can undo it.
 export default function LabelerPane({
   image, labels, labelsVersion, tool, view, setView, onStrokeEnd, onDiff,
-  onSamSnap, onWandSelect, classColors, classes, hiddenClasses, fitRef,
+  onSamSnap, onWandSelect, classColors, classes, lockedClasses, hiddenClasses, fitRef,
   samAvailable,
 }) {
   const canvasRef = useRef(null)
@@ -239,13 +239,15 @@ export default function LabelerPane({
   }
 
   function paintPixel(diff, idx, value) {
-    if (labels[idx] === value) return
-    if (!diff.has(idx)) diff.set(idx, labels[idx])
+    const previous = labels[idx]
+    if (previous === value || (previous !== UNLABELED && lockedClasses?.has(previous))) return
+    if (!diff.has(idx)) diff.set(idx, previous)
     labels[idx] = value
   }
 
   function stamp(x, y) {
     const { classId, brushSize, eraser } = settings.current
+    if (!eraser && lockedClasses?.has(classId)) return
     const value = eraser ? UNLABELED : classId
     // brushSize is the diameter, so a size of 1 is one pixel wide. The disc is
     // measured to pixel centres (px + 0.5), not to the corner the index names:
@@ -310,6 +312,7 @@ export default function LabelerPane({
   // current class (or the eraser). Shared by the polygon tool and SAM2 snap.
   function commitPolygons(polys) {
     const { classId, eraser } = settings.current
+    if (!eraser && lockedClasses?.has(classId)) return
     const value = eraser ? UNLABELED : classId
     const diff = new Map()
     for (const poly of polys) {
@@ -399,6 +402,7 @@ export default function LabelerPane({
   // labels, undo or autosave; this is where those live.
   function commitWandMask(mask) {
     const value = settings.current.eraser ? UNLABELED : settings.current.classId
+    if (!settings.current.eraser && lockedClasses?.has(settings.current.classId)) return
     const diff = new Map()
     for (let i = 0; i < mask.length; i++) {
       if (mask[i]) paintPixel(diff, i, value)

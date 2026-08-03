@@ -170,6 +170,19 @@ describe('class selection', () => {
     await waitFor(() => expect(active()).toContain('Eraser'))
   })
 
+  it('locking a class protects it from clear labels', async () => {
+    await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Lock Raw-Earth/Agriculture' }))
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Unlock Raw-Earth/Agriculture' })).toBeTruthy())
+
+    fireEvent.click(clearButton())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(pushed).toHaveLength(0)
+    expect(undoButton().disabled).toBe(true)
+    expect(labeledCount()).toBe(`${PAINTED.toLocaleString()} px`)
+  })
+
   it('hiding a class changes no pixel and no count', async () => {
     // The whole contract of the toggle: it is a view setting. Nothing about
     // the labels, what is saved, or what the palette counts may move.

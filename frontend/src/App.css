@@ -428,11 +428,10 @@ body {
   cursor: pointer;
 }
 
-/* The visibility toggle. The SVGs are drawn in solid black, which would be
-   invisible on this palette, so they are used as a MASK and the colour comes
-   from background-color -- that way they follow the theme and can dim with
-   state, and the files stay exactly as they were drawn. */
-.class-eye {
+/* Visibility and editing toggles sit beside the class picker. The supplied SVGs
+   are solid black, so use them as masks to follow the current text colour. */
+.class-eye,
+.class-lock {
   flex: 0 0 15px;
   height: 15px;
   padding: 0;
@@ -440,22 +439,49 @@ body {
   background-color: var(--text-dim);
   cursor: pointer;
   opacity: 0.5;
-  -webkit-mask: url('./assets/view.svg') center / contain no-repeat;
-  mask: url('./assets/view.svg') center / contain no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
 }
 
-.class-eye:hover {
-  background-color: var(--text);
-  opacity: 1;
+.class-eye {
+  -webkit-mask-image: url('./assets/view.svg');
+  mask-image: url('./assets/view.svg');
 }
 
-/* Hidden: the struck-through eye, at full strength, so a glance down the
-   palette shows what is switched off. */
 .class-eye.off {
   opacity: 1;
   background-color: var(--text);
   -webkit-mask-image: url('./assets/hide.svg');
   mask-image: url('./assets/hide.svg');
+}
+
+.class-lock {
+  -webkit-mask-image: url('./assets/unlock.svg');
+  mask-image: url('./assets/unlock.svg');
+}
+
+.class-lock.off {
+  opacity: 1;
+  background-color: var(--text);
+  -webkit-mask-image: url('./assets/lock.svg');
+  mask-image: url('./assets/lock.svg');
+}
+
+.class-eye:hover,
+.class-lock:hover {
+  background-color: var(--text);
+  opacity: 1;
+}
+
+/* Locked rows remain selectable so the user can unlock them, but their label
+   colour/name is muted as a persistent editing warning. */
+.class-item.locked .class-swatch,
+.class-item.locked .class-name {
+  opacity: 0.55;
 }
 
 /* The class itself reads as muted while its labels are not drawn. The count
