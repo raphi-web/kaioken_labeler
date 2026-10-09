@@ -125,7 +125,7 @@ def test_a_capped_selection_stays_connected(scratch_api):
         pytest.fail(f"a clipped single-sample selection broke into {pieces} pieces")
 
 
-@pytest.mark.parametrize("scratch_project", ["14.tiff"], indirect=True)
+@pytest.mark.parametrize("scratch_project", ["001.tif"], indirect=True)
 def test_nodata_is_never_selected(scratch_api, scratch_project):
     api = scratch_api
     invalid = ~api._image.valid_mask
@@ -134,7 +134,9 @@ def test_nodata_is_never_selected(scratch_api, scratch_project):
     m = _mask(_select(api, [A], tolerance=0.9))
     if (m & invalid).any():
         pytest.fail(f"{int((m & invalid).sum())} nodata px were selected")
-    # 14.tiff is the one image in this dataset that carries nodata (6,204 px).
+    # 001.tif is an edge tile of this dataset that carries nodata (8,443 px).
+    # The tile name is the only dataset-specific pin here; if a swap drops it,
+    # the test skips rather than passing vacuously on a nodata-free image.
 
 
 def test_global_reaches_disconnected_material(scratch_api):
@@ -402,7 +404,8 @@ def test_the_embedding_field_is_a_cosine_distance_at_pixel_resolution(scratch_ap
                         f"{field.min()}..{field.max()}")
 
 
-def test_the_default_tolerance_selects_a_region_and_not_the_scene(scratch_api):
+@pytest.mark.parametrize("scratch_project", ["003.tif"], indirect=True)
+def test_the_default_tolerance_selects_a_region_and_not_the_scene(scratch_api, scratch_project):
     """The UI's default lands in the band where the level is usable at all.
 
     The band is narrow and does not start at zero -- at the default level a
@@ -411,8 +414,10 @@ def test_the_default_tolerance_selects_a_region_and_not_the_scene(scratch_api):
     fails if a re-exported encoder moves the distances, which is the point:
     the number in LabelerPane would then need re-sighting.
 
-    Deliberately generous bounds. This pins "the default is inside the useful
-    band", not a particular selection size, which varies by what was clicked.
+    Pinned to 003.tif, a tile where all three of A/B/C land inside the band at
+    the default (measured 0.98% / 4.22% / 5.56%). Deliberately generous bounds:
+    this pins "the default is inside the useful band", not a particular
+    selection size, which varies by what was clicked.
     """
     api = scratch_api
     if not _sam_ready(api):
@@ -585,7 +590,8 @@ def test_embed_selection_is_deterministic_and_respects_the_budget(scratch_api):
         pytest.fail(f"a connected embed selection came back in {pieces} pieces")
 
 
-def test_the_default_embed_tolerance_selects_a_region_and_not_the_scene(scratch_api):
+@pytest.mark.parametrize("scratch_project", ["026.tif"], indirect=True)
+def test_the_default_embed_tolerance_selects_a_region_and_not_the_scene(scratch_api, scratch_project):
     """The frontend's EMBED_TOL_DEFAULT=50 maps to 0.08 -- the bench peak.
 
     Same shape as the SAM default test: pins "the shipped default lands in
@@ -596,7 +602,9 @@ def test_the_default_embed_tolerance_selects_a_region_and_not_the_scene(scratch_
     The click is the most interior pixel of the image's largest labeled
     region -- bench_wand.py's own methodology. An arbitrary point can land
     on a boundary or inside a tiny field parcel, where a tight and entirely
-    correct selection fails a share band that would then say nothing.
+    correct selection fails a share band that would then say nothing. Pinned
+    to 026.tif, a class-rich tile where that interior click selects 7.41% at
+    the default.
     """
     api = scratch_api
     if not _embed_ready(api):

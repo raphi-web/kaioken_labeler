@@ -32,7 +32,7 @@ IMAGE_EXTENSIONS = (".tif", ".tiff")
 #
 # Starting palettes offered by the setup dialog. A project's list is editable
 # from there afterwards, so these only decide what a new project opens with --
-# which matters because retyping eleven names and colours to start work is the
+# which matters because retyping ten names and colours to start work is the
 # kind of friction that gets a tool abandoned.
 #
 # "binary" is what this app shipped with when it did one-target segmentation.
@@ -41,16 +41,15 @@ IMAGE_EXTENSIONS = (".tif", ".tiff")
 CLASS_PRESETS = {
     "sentinel2": [
         {"id": 0, "name": "Urban", "color": "#e05a4f"},
-        {"id": 1, "name": "Road", "color": "#4a4a55"},
-        {"id": 2, "name": "Agriculture-Green", "color": "#3ddc6b"},
-        {"id": 3, "name": "Raw-Earth/Agriculture", "color": "#c98f3c"},
-        {"id": 4, "name": "Meadow", "color": "#d4e34a"},
-        {"id": 5, "name": "Forest", "color": "#14562b"},
-        {"id": 6, "name": "Shrub", "color": "#9ac48d"},
-        {"id": 7, "name": "Water", "color": "#2f7ce0"},
-        {"id": 8, "name": "Snow", "color": "#eef2f7"},
-        {"id": 9, "name": "Wetland", "color": "#9b5fd0"},
-        {"id": 10, "name": "Synthetic Nodata", "color": "#ff2fd0"},
+        {"id": 1, "name": "Agriculture-Green", "color": "#3ddc6b"},
+        {"id": 2, "name": "Raw-Earth/Agriculture", "color": "#c98f3c"},
+        {"id": 3, "name": "Meadow", "color": "#d4e34a"},
+        {"id": 4, "name": "Forest", "color": "#14562b"},
+        {"id": 5, "name": "Shrub", "color": "#9ac48d"},
+        {"id": 6, "name": "Water", "color": "#2f7ce0"},
+        {"id": 7, "name": "Snow", "color": "#eef2f7"},
+        {"id": 8, "name": "Wetland", "color": "#9b5fd0"},
+        {"id": 9, "name": "Synthetic Nodata", "color": "#ff2fd0"},
     ],
     "binary": [
         {"id": 0, "name": "Target", "color": "#ff5028"},
@@ -180,7 +179,7 @@ def config_from_settings(settings, existing_classes=None, next_class_id=None):
     # this function had thrown it away.
     # `is not None`, not truthiness: an empty list is a broken submission, not
     # an absent one, and answering it with the default palette would hand back
-    # eleven classes to a caller that asked for none.
+    # ten classes to a caller that asked for none.
     raw_classes = settings.get("classes")
     if raw_classes is not None:
         classes, next_id = classes_from_settings(raw_classes, existing_classes,

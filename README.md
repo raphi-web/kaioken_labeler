@@ -69,17 +69,16 @@ stores them:
 
 ## The dataset
 
-`project_config.json` points at `input_images/` (34 ten-band GeoTIFFs) and
+`project_config.json` points at `input_images/` (138 ten-band GeoTIFFs) and
 `label_raster/`.
 
 | Index | Class | | Index | Class |
 |-------|-------|-|-------|-------|
-| 0 | Urban | | 6 | Shrub |
-| 1 | Road | | 7 | Water |
-| 2 | Agriculture-Green | | 8 | Snow |
-| 3 | Raw-Earth/Agriculture | | 9 | Wetland |
-| 4 | Meadow | | 10 | Synthetic Nodata |
-| 5 | Forest | | | |
+| 0 | Urban | | 5 | Shrub |
+| 1 | Agriculture-Green | | 6 | Water |
+| 2 | Raw-Earth/Agriculture | | 7 | Snow |
+| 3 | Meadow | | 8 | Wetland |
+| 4 | Forest | | 9 | Synthetic Nodata |
 
 Pick a class from the palette left of the labeling pane, or with `1`–`9`, `0`,
 `-`; `E` toggles the eraser. Past eleven classes the extra ones are click-only —

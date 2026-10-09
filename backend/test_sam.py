@@ -24,7 +24,11 @@ from sam_service import SamService
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "testdata", "sam_golden.npz")
-IMAGE = os.path.join(ROOT, "input_images", "00.tiff")
+# The golden fixtures in sam_golden.npz were captured from this exact image, so
+# it is pinned to the repo-root 00.tiff (gitignored, kept beside the project)
+# rather than to whichever tile happens to be first in input_images/ -- the
+# dataset there is swapped between projects, and the goldens are not.
+IMAGE = os.path.join(ROOT, "00.tiff")
 
 # The click sets the fixtures were captured with, as (x, y, label).
 CLICKS = {
@@ -46,6 +50,8 @@ def _service_and_rgb():
     reason = svc.unavailable_reason()
     if reason:
         pytest.fail(f"SAM2 unavailable: {reason}")
+    if not os.path.exists(IMAGE):
+        pytest.skip(f"golden fixture image {os.path.basename(IMAGE)} not present")
     image = SentinelImage(IMAGE, expected_bands=10)
     return svc, image.rgb_composite([0, 1, 2])
 

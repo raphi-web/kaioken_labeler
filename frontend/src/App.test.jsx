@@ -172,16 +172,18 @@ describe('class selection', () => {
     const active = () => document.querySelector('.class-item.active')?.textContent
     expect(active()).toContain('Urban')
     fireEvent.keyDown(window, { key: '2' })
-    await waitFor(() => expect(active()).toContain('Road'))
+    await waitFor(() => expect(active()).toContain('Agriculture-Green'))
     fireEvent.keyDown(window, { key: 'e' })
     await waitFor(() => expect(active()).toContain('Eraser'))
   })
 
   it('locking a class protects it from clear labels', async () => {
     await mount()
-    fireEvent.click(screen.getByRole('button', { name: 'Lock Raw-Earth/Agriculture' }))
+    // The seeded pixels are class 3 == Meadow since the Road removal shifted
+    // the ids down; locking that class must spare them from Clear Labels.
+    fireEvent.click(screen.getByRole('button', { name: 'Lock Meadow' }))
     await waitFor(() => expect(
-      screen.getByRole('button', { name: 'Unlock Raw-Earth/Agriculture' })).toBeTruthy())
+      screen.getByRole('button', { name: 'Unlock Meadow' })).toBeTruthy())
 
     fireEvent.click(clearButton())
     await new Promise((r) => setTimeout(r, 20))
@@ -200,8 +202,9 @@ describe('class selection', () => {
       screen.getByRole('button', { name: 'Show Urban' })).toBeTruthy())
     expect(labeledCount()).toBe(countBefore)
     expect(pushed).toHaveLength(0)      // nothing was written back
-    // The seeded pixels are class 3, whichever name the palette gives it.
-    const painted = paletteRow('Raw-Earth')
+    // The seeded pixels are class 3, whichever name the palette gives it
+    // (Meadow since Road left the taxonomy and the ids shifted down).
+    const painted = paletteRow('Meadow')
     expect(painted.querySelector('.class-count').textContent)
       .toBe(PAINTED.toLocaleString())
   })
@@ -217,10 +220,10 @@ describe('class selection', () => {
     await waitFor(() => expect(eye('Hide Urban')).toBeTruthy())
 
     // ... and via the number key, which goes through the same path.
-    fireEvent.click(screen.getByRole('button', { name: 'Hide Road' }))
-    await waitFor(() => expect(eye('Show Road')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Agriculture-Green' }))
+    await waitFor(() => expect(eye('Show Agriculture-Green')).toBeTruthy())
     fireEvent.keyDown(window, { key: '2' })
-    await waitFor(() => expect(eye('Hide Road')).toBeTruthy())
+    await waitFor(() => expect(eye('Hide Agriculture-Green')).toBeTruthy())
   })
 
   it('ignores class keys while a modifier is held, so Ctrl+Y is not class 9', async () => {
@@ -240,9 +243,9 @@ const PROJECT = () => ({
   // palette's internal rendering.
   classes: [
     { id: 0, name: 'Urban', color: '#e05a4f' },
-    { id: 1, name: 'Road', color: '#4a4a55' },
-    { id: 2, name: 'Agriculture-Green', color: '#3ddc6b' },
-    { id: 3, name: 'Raw-Earth/Agriculture', color: '#c98f3c' },
+    { id: 1, name: 'Agriculture-Green', color: '#3ddc6b' },
+    { id: 2, name: 'Raw-Earth/Agriculture', color: '#c98f3c' },
+    { id: 3, name: 'Meadow', color: '#d4e34a' },
   ],
   data_profile: { input_channels: 4, display_bands: [0, 1, 2],
                   band_names: ['a', 'b', 'c', 'd'] },

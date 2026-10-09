@@ -13,10 +13,10 @@ import { useWand } from './useWand'
 // the painting is smoke.html's job, and the hook's job is what runs before it.
 
 const CLASSES = [
-  { id: 0, name: 'Urban', color: '#e05a4f' },       // seed 38
-  { id: 1, name: 'Road', color: '#4a4a55' },        // seed 24
-  { id: 7, name: 'Water', color: '#2f7ce0' },       // seed 14
-  { id: 8, name: 'Snow', color: '#eef2f7' },        // no seed -> 26
+  { id: 0, name: 'Urban', color: '#e05a4f' },               // seed 38
+  { id: 1, name: 'Agriculture-Green', color: '#3ddc6b' },   // seed 18
+  { id: 6, name: 'Water', color: '#2f7ce0' },               // seed 14
+  { id: 7, name: 'Snow', color: '#eef2f7' },                // no seed -> 26
 ]
 
 const SELECTION = { mask: new Uint8Array(16), count: 4, available: 4,
@@ -65,9 +65,9 @@ describe('tolerance', () => {
     await act(async () => { result.current.setTolerance(70) })
     expect(lastOptions(select).tolerance).toBe(70 / WAND_TOL_SCALE)
 
-    // Another class keeps its own seed ...
+    // Another class keeps its own seed (Agriculture-Green: 18) ...
     rerender({ tool: { classId: 1, eraser: false, mode: 'wand' } })
-    await waitFor(() => expect(lastOptions(select).tolerance).toBe(24 / WAND_TOL_SCALE))
+    await waitFor(() => expect(lastOptions(select).tolerance).toBe(18 / WAND_TOL_SCALE))
 
     // ... and coming back restores what was set, not the seed.
     rerender({ tool: { classId: 0, eraser: false, mode: 'wand' } })

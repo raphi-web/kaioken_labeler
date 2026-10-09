@@ -3,6 +3,49 @@
 Rationale and measurements that do not belong in source comments. Newest
 entry first.
 
+## 2026-10-09 — Road class removed; dataset swapped to 138 tiles
+
+The training-side taxonomy dropped Road (old id 1) and shifted every id above
+it down by one: Agriculture-Green 2→1, Raw-Earth 3→2, Meadow 4→3, Forest 5→4,
+Shrub 6→5, Water 7→6, Snow 8→7, Wetland 9→8, Synthetic Nodata 10→9. The
+label rasters on disk were already remapped by the user (verified: value
+union across all 138 masks is exactly 0..8, no 9/10 leftovers); this change
+aligns the app with them.
+
+Touched: `project_config.json` classes, `CLASS_PRESETS["sentinel2"]` in
+backend/project.py, the frontend fallback `CLASSES` in src/constants.js, the
+README class table, and the test fixtures that named Road.
+`WAND_TOL_SEEDS` needed no renumbering — the seeds are keyed by class NAME
+precisely so an id shift cannot mis-map a material's measured tolerance
+(Road's entry was deleted as dead weight). `next_class_id` stays 11: the
+high-water mark is deliberately never lowered, so old id 10 (Synthetic
+Nodata) is not handed to a future class — stale masks outlive configs.
+
+The dataset under input_images/label_raster was swapped wholesale at the same
+time (138 tiles named NNN.tif; previously 79 files 00..33/e2_*/s2_*). Two
+dataset facts broke fixtures that pinned old filenames:
+
+- test_sam's golden fixtures were captured from the old 00.tiff, which still
+  sits at the repo root; IMAGE now points there and skips when absent.
+- test_masks pinned label_raster/00.tif; now scans for a mask with both
+  nodata and class pixels (any file exercises the conversion).
+- The new masks are heterogeneous: int32/-9999 (98), int32/255 (16),
+  int16/-9999 (24) — and 16 of the int32/255 files declare nodata 255 while
+  STORING -9999. read_label_mask handles them correctly (range-keyed, not
+  sentinel-keyed); the round-trip test now asserts label semantics + class
+  pixel byte-equality universally, full byte-equality only for files whose
+  declared nodata is what they store, and prints the inconsistent list.
+  Worth fixing on the producer side eventually; the app is unaffected.
+- The wand band-calibration tests click fixed points, which are only
+  in-band on some tiles of the new dataset; they are pinned to measured
+  tiles (SAM default → 003.tif, embed default → 026.tif, nodata → 001.tif)
+  via the existing indirect-parametrize mechanism.
+
+The embed constants from the morning bench (peak 0.08, band 0.04..0.12) were
+measured on the OLD dataset's 470 regions. The encoder itself was trained on
+this same tile distribution, so the band is expected to hold; re-run
+`backend/bench_wand.py sources` after this swap if the wand ever feels off.
+
 ## 2026-10-09 — auto-encoder embedding as the wand's third source
 
 The labeling build grew a third magic-wand distance source, `embed`, from

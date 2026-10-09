@@ -59,13 +59,16 @@ export const WAND_TOL_DEFAULT = 26 // = 0.130, for a class with no measured opti
 //
 //   Urban        0.19  (.17/.24/.32)   +0.069 IoU over the global 0.13
 //   Raw-Earth    0.14  (.10/.15/.22)   +0.008   -- the most common class, and
-//   Road         0.12  (.11/.13/.21)   +0.002      the reason 0.13 is the
-//   Forest       0.11  (.10/.13/.18)   +0.023      global compromise
-//   Wetland      0.11  (.07/.10/.16)   +0.002
+//   Forest       0.11  (.10/.13/.18)   +0.023      the reason 0.13 is the
+//   Wetland      0.11  (.07/.10/.16)   +0.002      global compromise
 //   Shrub        0.10  (.10/.11/.13)   +0.108
 //   Meadow       0.09  (.09/.11/.14)   +0.130
 //   Agri-Green   0.09  (.09/.10/.14)   +0.067
 //   Water        0.07  (.07/.13/.27)   +0.019
+//
+// (Road was in this sweep at 0.12 and is gone: the class was dropped from
+// the dataset and every id above it shifted down by one. The seeds survive
+// that because they are keyed by name -- which is exactly why they are.)
 //
 // Worth +12% mean IoU over one global tolerance (0.353 -> 0.397); the ceiling
 // if you retuned per region is 0.585, which no default can reach.
@@ -78,7 +81,6 @@ export const WAND_TOL_DEFAULT = 26 // = 0.130, for a class with no measured opti
 export const WAND_TOL_SEEDS = {
   urban: 38,
   rawearthagriculture: 28,
-  road: 24,
   forest: 22,
   wetland: 22,
   shrub: 20,

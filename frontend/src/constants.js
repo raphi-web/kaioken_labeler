@@ -7,16 +7,15 @@ export const UNLABELED = 255
 // different label space from the one it would get as a project.
 export const CLASSES = [
   { id: 0, name: 'Urban', color: '#e05a4f' },
-  { id: 1, name: 'Road', color: '#4a4a55' },
-  { id: 2, name: 'Agriculture-Green', color: '#3ddc6b' },
-  { id: 3, name: 'Raw-Earth/Agriculture', color: '#c98f3c' },
-  { id: 4, name: 'Meadow', color: '#d4e34a' },
-  { id: 5, name: 'Forest', color: '#14562b' },
-  { id: 6, name: 'Shrub', color: '#9ac48d' },
-  { id: 7, name: 'Water', color: '#2f7ce0' },
-  { id: 8, name: 'Snow', color: '#eef2f7' },
-  { id: 9, name: 'Wetland', color: '#9b5fd0' },
-  { id: 10, name: 'Synthetic Nodata', color: '#ff2fd0' },
+  { id: 1, name: 'Agriculture-Green', color: '#3ddc6b' },
+  { id: 2, name: 'Raw-Earth/Agriculture', color: '#c98f3c' },
+  { id: 3, name: 'Meadow', color: '#d4e34a' },
+  { id: 4, name: 'Forest', color: '#14562b' },
+  { id: 5, name: 'Shrub', color: '#9ac48d' },
+  { id: 6, name: 'Water', color: '#2f7ce0' },
+  { id: 7, name: 'Snow', color: '#eef2f7' },
+  { id: 8, name: 'Wetland', color: '#9b5fd0' },
+  { id: 9, name: 'Synthetic Nodata', color: '#ff2fd0' },
 ]
 
 export function hexToRgb(hex) {
