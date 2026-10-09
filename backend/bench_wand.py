@@ -44,8 +44,12 @@ def scratch_project(n_images):
     must not be able to touch the ground truth it is scoring against.
     """
     import project as project_mod
-    from test_no_torch import ROOT
 
+    # Same ROOT derivation as backend/conftest.py: the repo root, one level
+    # above this script's own directory. (This used to import ROOT from
+    # test_no_torch, which never defined it -- the bench was broken until
+    # the embed run rediscovered that.)
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config_path = os.path.join(ROOT, project_mod.CONFIG_NAME)
     if not os.path.exists(config_path):
         return None
@@ -170,24 +174,54 @@ def report_tolerance(rows, names, tols):
         print(f"  {names.get(cls, cls):>22s}  {round(tol * 200)}")
 
 
-def report_sources(rows, names, spectral, embedding):
-    """Whether the two distance sources are redundant or complementary."""
+def report_sources(rows, names, arms):
+    """Whether the distance sources are redundant or complementary.
+
+    `arms` is {source: [score labels of that source's tolerances]}; every arm
+    is compared at its own best tolerance -- the three distance units (RMS
+    band difference, SAM cosine, embed cosine) have nothing to do with each
+    other, so a shared tolerance would be meaningless.
+    """
     best = {k: np.array([max(r["scores"][t] for t in labels) for r in rows])
-            for k, labels in (("spectral", spectral), ("embedding", embedding))}
+            for k, labels in arms.items()}
     print(f"\n{len(rows)} regions\n")
     for key, values in best.items():
         print(f"{key:>10s} @ its own best tolerance: mean {values.mean():.3f}  "
               f"median {np.median(values):.3f}  IoU>=0.5 "
               f"{100 * (values >= 0.5).mean():4.1f}%")
-    wins = int((best["embedding"] > best["spectral"]).sum())
-    union = np.maximum(best["spectral"], best["embedding"])
-    print(f"\nembedding wins on {wins}/{len(rows)} regions")
-    print(f"correlation of the two: {np.corrcoef(best['spectral'], best['embedding'])[0, 1]:.3f}")
-    print(f"picking the better per region: {union.mean():.3f} "
-          f"({100 * (union.mean() / best['spectral'].mean() - 1):+.0f}% over spectral)")
+    keys = list(arms)
+    base = keys[0]
+    for other in keys[1:]:
+        wins = int((best[other] > best[base]).sum())
+        corr = float(np.corrcoef(best[base], best[other])[0, 1])
+        union = np.maximum(best[base], best[other])
+        print(f"\n{other} wins on {wins}/{len(rows)} regions vs {base}")
+        print(f"correlation of the two: {corr:.3f}")
+        print(f"picking the better per region: {union.mean():.3f} "
+              f"({100 * (union.mean() / best[base].mean() - 1):+.0f}% over {base})")
     print("\nA high correlation means the second source is redundant; a low one "
           "with a real union gain\nmeans they fail on different regions, which "
           "is the only thing that justifies keeping both.")
+
+
+def report_curves(rows, arm, title):
+    """Mean IoU at each tolerance of one arm: where the useful band sits.
+
+    `arm` is [(score label, tolerance), ...] in sweep order. The tolerances
+    inside ~10% of the peak are the band the UI slider should span; the peak
+    anchors the default. Below the band a click takes a speck, above it the
+    scene -- both read as collapsed IoU against the clicked region.
+    """
+    print(f"\n{title}")
+    curve = [(tol, float(np.mean([r["scores"][label] for r in rows])))
+             for label, tol in arm]
+    peak_tol, peak_iou = max(curve, key=lambda c: c[1])
+    for tol, iou in curve:
+        mark = " <- peak" if tol == peak_tol else (" *" if iou >= 0.9 * peak_iou else "")
+        print(f"  tol {tol:5.2f}: mean IoU {iou:.3f}{mark}")
+    band = [tol for tol, iou in curve if iou >= 0.9 * peak_iou]
+    print(f"  band within 10% of peak: {min(band):.2f}..{max(band):.2f} "
+          f"(peak {peak_tol:.2f} @ {peak_iou:.3f})")
 
 
 def main():
@@ -212,14 +246,27 @@ def main():
         else:
             if api._sam.unavailable_reason():
                 raise SystemExit(f"SAM2 unavailable: {api._sam.unavailable_reason()}")
-            spectral = [round(0.05 + 0.05 * i, 3) for i in range(9)]
-            embedding = [round(0.5 + 0.05 * i, 3) for i in range(11)]
-            sweep = ([(t, {"tolerance": t, "sample_size": 9}) for t in spectral]
-                     + [(f"sam{t}", {"tolerance": t, "sample_size": 9,
-                                     "source": "sam", "level": "fine"})
-                        for t in embedding])
+            if api._embed_unavailable():
+                raise SystemExit(f"embed unavailable: {api._embed_unavailable()}")
+            # (name, [(score label, tolerance), ...], options template). The
+            # three arms sweep disjoint tolerance ranges because the three
+            # distance units have nothing to do with each other.
+            arms = {
+                "spectral": ([round(0.05 + 0.05 * i, 3) for i in range(9)],
+                             {"sample_size": 9}),
+                "sam": ([round(0.5 + 0.05 * i, 3) for i in range(11)],
+                        {"sample_size": 9, "source": "sam", "level": "fine"}),
+                "embed": ([round(0.02 + 0.02 * i, 3) for i in range(20)],
+                          {"sample_size": 9, "source": "embed"}),
+            }
+            sweep = [(f"{name[:4]}{t}", {**base, "tolerance": t})
+                     for name, (tols, base) in arms.items() for t in tols]
             rows, names = collect(api, args, sweep)
-            report_sources(rows, names, spectral, [f"sam{t}" for t in embedding])
+            report_sources(rows, names,
+                           {name: [f"{name[:4]}{t}" for t in tols]
+                            for name, (tols, _) in arms.items()})
+            report_curves(rows, [("embe" + str(t), t) for t in arms["embed"][0]],
+                          "embed tolerance curve (anchors EMBED_TOL_*)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
