@@ -10,6 +10,7 @@ and read back; SAM2 click-assist runs on onnxruntime.
 
 import base64
 import os
+import shutil
 import threading
 import traceback
 
@@ -19,6 +20,7 @@ import webview
 
 from data import (UNLABELED, SentinelImage, array_to_png_b64, read_label_mask,
                   tile_geotiff, write_label_mask)
+from embed_service import INPUT_BANDS, EmbedService
 from project import (CLASS_PRESETS, DEFAULT_PRESET, Project,
                      config_from_settings, config_path, default_config,
                      probe_band_count, save_config)
@@ -49,9 +51,10 @@ class Api:
         self._dirty_geo = {}     # name -> (crs, transform) for each dirty entry above
         self._lock = threading.Lock()
         self._sam = SamService()  # Efficient-SAM2 click assist (onnxruntime)
+        self._embed = EmbedService()  # auto-encoder land-cover embeddings
         # The wand keeps its own caches, keyed on the image (see Wand.set_image),
-        # and shares the encoder with the snap tool through this SamService.
-        self._wand = Wand(self._sam)
+        # and shares the encoders with the snap tool through these services.
+        self._wand = Wand(self._sam, self._embed)
         # Background GeoTIFF tiling (see create_project_from_geotiff)
         self._tiling = {"running": False, "done": 0, "total": 0,
                         "result": None, "error": None}
@@ -150,6 +153,10 @@ class Api:
                 reason = self._sam.unavailable_reason()
                 if reason is not None:
                     raise WandError(reason)
+            elif options.source == "embed":
+                reason = self._embed_unavailable()
+                if reason is not None:
+                    raise WandError(reason)
             result = self._wand.select(samples, options, self._labels)
         except WandError as e:
             return {"ok": False, "error": str(e)}
@@ -171,6 +178,25 @@ class Api:
     def sam_available(self):
         """Whether the Efficient-SAM2 click assist can run (files present)."""
         reason = self._sam.unavailable_reason()
+        return {"available": reason is None, "reason": reason}
+
+    def _embed_unavailable(self):
+        """Why source='embed' cannot run right now, or None if it can.
+
+        The graph is fixed at 10 input bands; a project tiled from another
+        sensor gets a clear refusal instead of a shape error from ORT.
+        """
+        reason = self._embed.unavailable_reason()
+        if reason is not None:
+            return reason
+        if self._image is not None and self._image.bands != INPUT_BANDS:
+            return (f"The embedding encoder needs a {INPUT_BANDS}-band stack; "
+                    f"this image has {self._image.bands}")
+        return None
+
+    def embed_available(self):
+        """Whether the embedding wand source can run (model present, 10 bands)."""
+        reason = self._embed_unavailable()
         return {"available": reason is None, "reason": reason}
 
     def _sam_image_key(self):
@@ -922,9 +948,93 @@ class Api:
         """{name: {labeled, total}} plus scan progress, for the thumbnail strip."""
         return {**self._label_scan, "counts": dict(self._label_counts)}
 
-    @staticmethod
-    def _file_dialog():
-        """Pick a single existing GeoTIFF."""
+    def add_image(self, source_path, force=False):
+        """Copy a user-chosen GeoTIFF into the project's images folder.
+
+        The destination filename is the source's basename -- the project already
+        lists images by name, so two files of the same name in the same folder
+        are at best a hidden conflict and at worst a silent overwrite. A band
+        mismatch with the project's `data_profile.input_channels` is rejected
+        outright: the model the masks feed into is fixed at construction time,
+        and adding a 3-band image to a 10-band project would turn every label
+        we paint into a different material.
+
+        A SIZE mismatch is the only soft check, because users sometimes add
+        a differently-sized tile to a project that was tiled from a larger
+        raster (the on-disk image has its own grid). That is reported back with
+        `requires_confirm=True` so the frontend can ask for an explicit yes
+        before the copy is committed.
+
+        A copy, not a move: the user's source folder is rarely the project
+        folder, and silently relocating well-named files is the kind of
+        "I did not mean to do that" moment the test suite is supposed to catch.
+
+        The new image is added to the project list but NOT loaded as the
+        active image. The user picked the file from a menu, not from the
+        thumbnail strip, so stealing the current image would be a surprising
+        side effect.
+        """
+        if self._project is None:
+            return {"ok": False, "error": "No project open"}
+        if not source_path or not os.path.isfile(source_path):
+            return {"ok": False, "error": "Pick a file to add"}
+        name = os.path.basename(source_path)
+        if not name:
+            return {"ok": False, "error": "Pick a file to add"}
+        try:
+            with rasterio.open(source_path) as src:
+                bands = src.count
+                width, height = src.width, src.height
+        except Exception as e:
+            return {"ok": False, "error": f"Could not read that file: {e}"}
+        if bands != self._project.input_channels:
+            return {"ok": False, "error":
+                    f"Expected a {self._project.input_channels}-band stack "
+                    f"(project data_profile), got {bands} bands"}
+        existing = self._project.list_images()
+        if name in existing:
+            return {"ok": False, "error":
+                    f"An image named '{name}' already exists in this project"}
+        # The size check is the only thing that asks before committing. The
+        # "no images yet" case is the same as "matching size" -- there is
+        # nothing to compare against, so the dialog has nothing to say.
+        if not force and existing:
+            with rasterio.open(self._project.image_path(existing[0])) as src:
+                ref = {"width": src.width, "height": src.height,
+                       "name": existing[0]}
+            if (width, height) != (ref["width"], ref["height"]):
+                return {"ok": False, "requires_confirm": True,
+                        "existing": ref,
+                        "candidate": {"width": width, "height": height,
+                                      "name": name, "bands": bands}}
+        try:
+            # shutil.copy2 keeps the source's mtime/atime so the on-disk
+            # project ordering matches the file's history rather than the
+            # moment of import (small, but the kind of thing someone notices).
+            shutil.copy2(source_path, self._project.image_path(name))
+        except OSError as e:
+            return {"ok": False, "error": f"Could not copy {name}: {e}"}
+        # The label scan and the thumbnail scan are both keyed on the on-disk
+        # list, so the new file lands in their next pass without an explicit
+        # kick. start_thumbnail_generation() is the cheap one; it picks up
+        # the new file on restart when needed, and `force=True` only matters
+        # when an existing thumbnail has gone stale for another reason.
+        self._start_label_scan()
+        return {"ok": True, "name": name, "width": width, "height": height,
+                "bands": bands, "project": self.get_project()}
+
+    def pick_file(self, title="Pick a file"):
+        """Open the native file picker and return its first selection, or null.
+
+        The frontend's Add Image path is the only caller: it needs the
+        absolute path of the GeoTIFF the user wants to import, and the
+        pywebview dialog is the only thing that has access to that. A null
+        return means the user cancelled, which is not an error.
+        """
+        path = self._file_dialog()
+        return {"path": path}
+
+
         window = webview.windows[0] if webview.windows else None
         if window is None:
             return None

@@ -471,3 +471,151 @@ def test_the_embedding_selection_is_deterministic_and_respects_the_budget(scratc
     pieces = ndimage.label(_mask(capped), structure=_WAND_CONNECTIVITY)[1]
     if pieces > 1:
         pytest.fail(f"a connected embedding selection came back in {pieces} pieces")
+# ---------- the auto-encoder embedding source ----------
+#
+# Same substitution test as the SAM section: every invariant above must hold
+# unchanged when distance means "8-dim land-cover embedding" instead of bands
+# or SAM2 features. Two things are genuinely new. The embed stack is at pixel
+# resolution, so the click's own distance survives -- there is no upsample to
+# blur it -- and the source must ignore the SAM-only level option rather than
+# rejecting it.
+
+# Provisional: the usable band is measured by bench_wand.py (sources mode)
+# before the frontend default is set; these tests score fields and invariants,
+# which do not depend on where the band sits.
+EMBED_TOL = 0.2
+
+
+def _embed_ready(api):
+    """Whether the embedding encoder can run here; these tests skip if not."""
+    reason = api._embed.unavailable_reason()
+    if reason is not None:
+        pytest.skip(f"embed unavailable: {reason}")
+    if api._image.bands != 10:
+        pytest.skip("embed needs a 10-band stack")
+    return True
+
+
+def _embed_select(api, samples, **options):
+    opts = {"source": "embed", "tolerance": EMBED_TOL, "sample_size": 9}
+    opts.update(options)
+    return api.wand_select([[x, y] for x, y in samples], opts)
+
+
+def test_embed_ignores_the_sam_only_level_option(scratch_api):
+    """A level travels with every request; only "sam" gets to reject a bad one."""
+    api = scratch_api
+    if not _embed_ready(api):
+        return
+    r = _embed_select(api, [A], level="nonsense")
+    if not r.get("ok"):
+        pytest.fail(f"embed should ignore the level option, got: {r.get('error')}")
+
+
+def test_the_embed_field_is_a_cosine_distance_at_pixel_resolution(scratch_api):
+    api = scratch_api
+    if not _embed_ready(api):
+        return
+    _, field = _field(api, A, "embed")
+    if field.shape != (api._image.height, api._image.width):
+        pytest.fail(f"field is {field.shape}, image is "
+                    f"{(api._image.height, api._image.width)}")
+    if not np.isfinite(field).all():
+        pytest.fail("field has non-finite values")
+    if field.min() < -1e-5 or field.max() > 2 + 1e-5:
+        pytest.fail(f"cosine distance out of [0, 2]: {field.min()}..{field.max()}")
+
+
+def test_the_embed_field_is_exact_at_the_click(scratch_api):
+    """Pixel-resolution grid: unlike SAM, nothing upsamples the zero away.
+
+    sample_size=1 makes the reference the clicked pixel's own vector, so its
+    distance is exactly 0 by construction. This is the property that lets an
+    embed selection hug boundaries the SAM field's half-pixel blur cannot.
+    """
+    api = scratch_api
+    if not _embed_ready(api):
+        return
+    _, field = _field(api, A, "embed", size=1)
+    if field[A[1], A[0]] > 1e-4:
+        pytest.fail(f"click not at distance ~0 on the embed grid: "
+                    f"{field[A[1], A[0]]}")
+
+
+def test_embed_measures_something_of_its_own(scratch_api):
+    """Guards against the new source quietly aliasing an existing one."""
+    api = scratch_api
+    if not _embed_ready(api):
+        return
+    _, spectral = _field(api, A, "image")
+    _, embed = _field(api, A, "embed")
+    if np.allclose(spectral, embed):
+        pytest.fail("the embed field is identical to the spectral one")
+    if api._sam.unavailable_reason() is None:
+        _, sam = _field(api, A, "sam")
+        if np.allclose(sam, embed):
+            pytest.fail("the embed field is identical to the SAM one")
+
+
+def test_adding_a_sample_never_removes_a_pixel_on_embed(scratch_api):
+    """The wand's central property, on the third source."""
+    api = scratch_api
+    if not _embed_ready(api):
+        return
+    one = _mask(_embed_select(api, [A], protect=False))
+    two = _mask(_embed_select(api, [A, B], protect=False))
+    lost = int((one & ~two).sum())
+    if lost:
+        pytest.fail(f"a second embed sample dropped {lost} px the first had selected")
+
+
+def test_embed_selection_is_deterministic_and_respects_the_budget(scratch_api):
+    api = scratch_api
+    if not _embed_ready(api):
+        return
+    first = _mask(_embed_select(api, [A], protect=False))
+    again = _mask(_embed_select(api, [A], protect=False))
+    if not np.array_equal(first, again):
+        pytest.fail("two identical embed selections disagree")
+    capped = _embed_select(api, [A], protect=False, max_pixels=BUDGET)
+    if capped["count"] > BUDGET:
+        pytest.fail(f"budget ignored on embed: {capped['count']} > {BUDGET}")
+    pieces = ndimage.label(_mask(capped), structure=_WAND_CONNECTIVITY)[1]
+    if pieces > 1:
+        pytest.fail(f"a connected embed selection came back in {pieces} pieces")
+
+
+def test_embed_protect_and_global_compose(scratch_api):
+    api = scratch_api
+    if not _embed_ready(api):
+        return
+    labels = api._labels
+    r = _embed_select(api, [A], protect=True, max_pixels=5000, **{"global": True})
+    if not r.get("ok"):
+        pytest.fail(f"embed + protect + global rejected: {r.get('error')}")
+    m = _mask(r)
+    if labels is not None and (m & (labels != 255)).any():
+        pytest.fail("protect stopped applying on the embed source")
+    if r["count"] > 5000:
+        pytest.fail("the budget stopped applying on the embed source")
+
+
+def test_embed_select_fails_as_a_message_not_a_traceback(scratch_api, monkeypatch):
+    """A missing model must reach the frontend as {ok: false, error: ...}."""
+    api = scratch_api
+    monkeypatch.setattr(api._embed, "unavailable_reason",
+                        lambda: "embedding model missing (embedding.onnx)")
+    r = api.wand_select([[10, 10]], {"tolerance": EMBED_TOL, "source": "embed"})
+    if r.get("ok") or "missing" not in r.get("error", ""):
+        pytest.fail(f"expected a clean 'missing' error, got {r}")
+
+
+def test_embed_available_reports_the_model_state(scratch_api):
+    api = scratch_api
+    r = api.embed_available()
+    reason = api._embed.unavailable_reason()
+    bands = api._image.bands if api._image is not None else None
+    expected = reason is None and bands == 10
+    if r["available"] != expected:
+        pytest.fail(f"embed_available says {r}, expected available={expected} "
+                    f"(reason={reason}, bands={bands})")

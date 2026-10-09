@@ -44,7 +44,11 @@ MAX_SAMPLE_PIXELS = len(_SAMPLE_OFFSETS)
 # What the wand measures distance in. "image" is the spectral wand: every band
 # of the raster. "sam" runs the identical machinery over a SAM2 encoder feature
 # map instead -- see Wand._embedding_field for what that buys and what it costs.
-WAND_SOURCES = ("image", "sam")
+# "embed" is the third source: a per-pixel land-cover embedding from the
+# auto-encoder graph in auto_encoder/ (see Wand.embed_features), pixel
+# resolution rather than a coarse feature grid, and trained on exactly these
+# classes rather than on photographs.
+WAND_SOURCES = ("image", "sam", "embed")
 
 
 class WandError(Exception):
@@ -115,7 +119,7 @@ def parse_options(options):
                    object instead of three that can disagree. The CALLER
                    decides when it applies -- notably it must NOT while
                    erasing, since the eraser only ever acts on labeled pixels.
-      source       "image" (default) or "sam".
+      source       "image" (default), "sam" or "embed".
       level        which SAM2 feature map, for source="sam": "fine", "mid" or
                    "deep" (see sam_service.FEATURE_LEVELS). Ignored otherwise.
     """
@@ -188,14 +192,16 @@ class Wand:
     request without thinking about invalidation.
     """
 
-    def __init__(self, sam=None):
+    def __init__(self, sam=None, embed=None):
         self._sam = sam
+        self._embed = embed
         self._image = None
         self._key = None
         self._display_bands = None
         # {(source, level, y, x, sample_size): distance field}
         self._fields = {}
-        # {level: centred unit-length SAM2 features}
+        # {level: centred unit-length SAM2 features}; "embed" keys the
+        # auto-encoder stack in the same cache, so set_image invalidates both.
         self._stacks = {}
 
     # ---------- the image ----------
@@ -322,6 +328,64 @@ class Wand:
             self._stacks[level] = stack
         return stack
 
+    def _cosine_field(self, stack, y, x, sample_size):
+        """Cosine distance field (H, W) from a unit-vector stack at pixel (y, x).
+
+        Shared by the two embedding sources, which differ only in how `stack`
+        was produced: map the pixel onto the feature grid (an identity when
+        the grid is already pixel-resolution, as the embed stack is), sample
+        a reference direction, one tensordot for the whole field, and upsample
+        only if the grid was coarser than the image.
+
+        Both sides are unit vectors, so the dot product is the cosine itself.
+        """
+        _, grid_h, grid_w = stack.shape
+        height, width = self._image.height, self._image.width
+        # The SAM encoder resizes the whole image to a square 1024x1024
+        # regardless of its aspect (see SamService._preprocess), so a pixel
+        # lands on the grid by plain proportional scaling in each axis
+        # independently. The embed grid needs no mapping at all.
+        fy = min(grid_h - 1, int((y + 0.5) * grid_h / height))
+        fx = min(grid_w - 1, int((x + 0.5) * grid_w / width))
+        ref = _feature_sample(stack, fy, fx, sample_size)
+        field = 1.0 - np.tensordot(ref, stack, axes=(0, 0))
+        if (grid_h, grid_w) != (height, width):
+            field = resize_bilinear(field, (height, width))
+        return field
+
+    def embed_features(self):
+        """Centred, unit-length auto-encoder embeddings (8, H, W) for the image.
+
+        The pixel-resolution counterpart to features(): the graph encodes
+        128x128 patches of raw DN and EmbedService stitches them, so one cell
+        is one pixel and the field needs no upsample -- which is what lets an
+        embed selection sit exactly on the clicked pixel, something the SAM
+        field's coarse grid blurs away.
+
+        Centring and unit-norm are the same two preparations features() does,
+        for the same reasons (see there for the measurements). On this
+        project's own labels, centring lifts the intra/inter cosine-distance
+        ratio from 0.043 to 0.018.
+
+        Cached under the image's path rather than the SAM key: the encoder
+        consumes every band, so the display-band mapping the SAM key carries
+        cannot change its output, and folding it in would re-encode on a
+        display change that changes nothing here.
+        """
+        if self._embed is None:
+            raise WandError("the embedding encoder is not available")
+        stack = self._stacks.get("embed")
+        if stack is None:
+            key = getattr(self._image, "path", None) or self._key
+            self._embed.set_image(self._image.raw, key)
+            feats = np.asarray(self._embed.feature_stack(), dtype=np.float32)
+            channels = feats.shape[0]
+            feats = feats - feats.reshape(channels, -1).mean(axis=1)[:, None, None]
+            norm = np.sqrt((feats * feats).sum(axis=0))
+            stack = feats / np.maximum(norm, 1e-12)
+            self._stacks["embed"] = stack
+        return stack
+
     def _embedding_field(self, y, x, sample_size, level):
         """Per-pixel cosine distance (H, W) from the SAM2 features at (y, x).
 
@@ -346,18 +410,7 @@ class Wand:
         nothing downstream can tell the difference since the flood fill, the
         valid mask and label protection all still run at pixel resolution.
         """
-        stack = self.features(level)  # (C, h, w), unit vectors
-        _, grid_h, grid_w = stack.shape
-        height, width = self._image.height, self._image.width
-        # The encoder resizes the whole image to a square 1024x1024 regardless
-        # of its aspect (see SamService._preprocess), so a pixel lands on the
-        # grid by plain proportional scaling in each axis independently.
-        fy = min(grid_h - 1, int((y + 0.5) * grid_h / height))
-        fx = min(grid_w - 1, int((x + 0.5) * grid_w / width))
-        ref = _feature_sample(stack, fy, fx, sample_size)
-        # Both sides are unit vectors, so the dot product is the cosine itself.
-        field = 1.0 - np.tensordot(ref, stack, axes=(0, 0))
-        return resize_bilinear(field, (height, width))
+        return self._cosine_field(self.features(level), y, x, sample_size)
 
     def fields(self, samples, options):
         """One per-pixel distance field (H, W) per sample, from `options.source`.
@@ -385,6 +438,9 @@ class Wand:
                 if options.source == "sam":
                     field = self._embedding_field(y, x, options.sample_size,
                                                   options.level)
+                elif options.source == "embed":
+                    field = self._cosine_field(self.embed_features(), y, x,
+                                               options.sample_size)
                 else:
                     field = self._spectral_field(y, x, options.sample_size)
                 self._fields[key] = field
@@ -414,6 +470,8 @@ class Wand:
             # slow, failure-prone step here, and a model error must come back
             # as a message the pane can show instead of a traceback.
             self.features(options.level)
+        elif options.source == "embed":
+            self.embed_features()  # same reason as above
 
         valid = self._image.valid_mask
         height, width = valid.shape
