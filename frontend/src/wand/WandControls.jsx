@@ -41,11 +41,14 @@ function sources({ samAvailable, embedAvailable }) {
       title: embedAvailable
         ? 'Cosine distance between 8-dim land-cover embeddings from the '
           + 'auto-encoder (auto_encoder/embedding.onnx), trained on exactly '
-          + "these classes. Pixel resolution -- the graph's grid is one cell "
-          + 'per pixel -- so boundaries land where the material actually '
-          + 'changes instead of where an upsampled feature grid says they '
-          + 'might. Measured best of the three on this project (see '
-          + 'implementation_log.txt). Needs a 10-band Sentinel-2 stack.'
+          + 'these classes. Pixel resolution -- one embedding per pixel -- '
+          + 'so boundaries land where the material actually changes instead '
+          + 'of where an upsampled feature grid says they might. Scores '
+          + 'just under spectral overall (mean IoU 0.507 against 0.543 '
+          + 'over 470 labeled regions) but wins on 205 of them and fails on '
+          + 'different ones, so it is the first thing to try where the '
+          + 'spectral fill will not converge. Needs a 10-band Sentinel-2 '
+          + 'stack.'
         : 'Embedding model missing (auto_encoder/embedding.onnx), or this '
           + 'project is not a 10-band stack',
     },

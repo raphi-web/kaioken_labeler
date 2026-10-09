@@ -1,0 +1,93 @@
+# Implementation log
+
+Rationale and measurements that do not belong in source comments. Newest
+entry first.
+
+## 2026-10-09 — auto-encoder embedding as the wand's third source
+
+The labeling build grew a third magic-wand distance source, `embed`, from
+`auto_encoder/embedding.onnx` (contract: `auto_encoder/ONNX.md`). The model
+replaces the never-wired prithvi encoder folder, which was deleted; a backup
+lives outside the repo.
+
+### Design decisions
+
+- **New source, not a replacement.** The wand already dispatched on
+  `source` ("image" | "sam"); "embed" is a third arm of that switch, so every
+  downstream invariant (additivity, per-sample budgets, negatives, protect,
+  global mode) is inherited and re-tested rather than reimplemented.
+- **Pixel resolution, no upsample.** The graph encodes fixed 128×128 patches
+  of raw DN; `EmbedService` tiles, batches (≤64 patches/run) and stitches to
+  (8, H, W) at one cell per pixel, with edge-padding for non-multiples of
+  128. Unlike SAM's coarse feature grids, the click's own distance survives
+  exactly (pinned by `test_the_embed_field_is_exact_at_the_click`).
+- **Same field maths as SAM.** `Wand._cosine_field` was extracted from the
+  SAM path: map pixel → grid (identity here), mean-centre + unit-normalise
+  the stack, one tensordot per click. Centring is load-bearing: measured on
+  00.tiff's labels, the intra/inter cosine-distance ratio improves from
+  0.043 (raw) to 0.018 (centred).
+- **Hard gate at 10 bands.** The graph's input is fixed `(B, 10, 128, 128)`
+  int16 DN; projects are band-count-configurable, so `Api._embed_unavailable`
+  refuses non-10-band projects with a message instead of an ORT shape error,
+  and the UI button greys out (refetched per project, since the gate is
+  project-shaped while SAM's model-file check is global).
+- **Spectral stays the default** (user decision, confirmed by the bench below).
+- **One tolerance across classes** for embed, same policy as SAM: per-class
+  optima have not been measured, and inventing seeds would dress a guess up
+  as evidence. Each embedding source remembers its own slider position
+  (`samTolerance` / `embedTolerance` settings fields).
+
+### Bench: `backend/bench_wand.py sources --images 20`
+
+470 labeled regions across 20 project images, each source at its own best
+tolerance (per-region oracle over its swept range):
+
+| source | mean IoU | median | IoU ≥ 0.5 |
+|---|---|---|---|
+| spectral | 0.543 | 0.550 | 55.5% |
+| embed    | 0.507 | 0.534 | 52.8% |
+| sam      | 0.469 | 0.478 | 48.1% |
+
+Complementarity vs spectral:
+
+| pair | wins over spectral | correlation | per-region union |
+|---|---|---|---|
+| embed | 205/470 | 0.658 | 0.605 (+11%) |
+| sam   | 173/470 | 0.518 | 0.606 (+12%) |
+
+Reading: embed lands between spectral and SAM overall, but wins on 44% of
+regions with a moderate correlation — it fails where spectral fails
+differently, which is the only property that justifies a third source. On
+the 3-region pilot run embed looked best of all three (0.744); the 470-region
+run corrected that, and the tooltip copy was written from the big run.
+
+Embed tolerance curve (mean IoU per tolerance, 470 regions):
+
+```
+0.02 0.272 | 0.04 0.319 | 0.06 0.327 | 0.08 0.328 <- peak
+0.10 0.318 | 0.12 0.303 | 0.14 0.294 | 0.16 0.278
+0.20 0.253 | 0.30 0.211 | 0.40 0.189
+band within 10% of peak: 0.04..0.12
+```
+
+→ `EMBED_TOL_FLOOR = 0.02`, `EMBED_TOL_CEIL = 0.14`, slider 50 = 0.08 =
+peak, so the useful band spans slider 14..71 and the default sits on the low
+side of the decay, matching the spectral wand's "over-selection costs more
+than under-selection" policy.
+
+### Encoding cost
+
+One 512×512 tile = 16 patches = one batched run ≈ 0.09 s on CPU (Ryzen 5
+PRO 8540U), vs seconds for a SAM2 encode. The first embed click on an image
+pays it; the result is cached per image in `Wand._stacks["embed"]` and in
+`EmbedService`, keyed so display-band changes do not re-encode (the encoder
+consumes all 10 bands regardless).
+
+### Also fixed on the way
+
+- `bench_wand.py` was broken before this change: it imported `ROOT` from
+  `test_no_torch`, which never defined it. Now derived like conftest does.
+- `test_no_torch` module list gained `embed_service` (top-level imports must
+  stay torch-free; onnxruntime loads lazily inside `_ensure_loaded`).
+- Stray `00.tiff` at the repo root and `input_images/00.tiff` duplication
+  left alone (pre-existing, out of scope).

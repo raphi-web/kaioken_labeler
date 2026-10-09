@@ -585,6 +585,48 @@ def test_embed_selection_is_deterministic_and_respects_the_budget(scratch_api):
         pytest.fail(f"a connected embed selection came back in {pieces} pieces")
 
 
+def test_the_default_embed_tolerance_selects_a_region_and_not_the_scene(scratch_api):
+    """The frontend's EMBED_TOL_DEFAULT=50 maps to 0.08 -- the bench peak.
+
+    Same shape as the SAM default test: pins "the shipped default lands in
+    the band where the source is usable" (measured over 470 regions: peak
+    0.328 mean IoU at 0.08, band 0.04..0.12), so a re-exported encoder that
+    moves the distances fails here instead of shipping a mistuned slider.
+
+    The click is the most interior pixel of the image's largest labeled
+    region -- bench_wand.py's own methodology. An arbitrary point can land
+    on a boundary or inside a tiny field parcel, where a tight and entirely
+    correct selection fails a share band that would then say nothing.
+    """
+    api = scratch_api
+    if not _embed_ready(api):
+        return
+    labels = api._labels
+    if labels is None or (labels != 255).sum() == 0:
+        pytest.skip("nothing labeled in this image")
+    best = None
+    for cls in np.unique(labels):
+        if cls == 255:
+            continue
+        comp, count = ndimage.label(labels == cls)
+        if not count:
+            continue
+        sizes = ndimage.sum(np.ones_like(comp), comp, range(1, count + 1))
+        idx = int(np.argmax(sizes))
+        if best is None or sizes[idx] > best[0]:
+            dist = ndimage.distance_transform_edt(comp == (idx + 1))
+            y, x = np.unravel_index(int(dist.argmax()), dist.shape)
+            best = (int(sizes[idx]), int(x), int(y))
+    _, x, y = best
+    n = api._image.height * api._image.width
+    share = 100 * _embed_select(api, [(x, y)], protect=False,
+                                tolerance=0.08)["count"] / n
+    if not 0.05 <= share <= 25:
+        pytest.fail(f"at tolerance 0.08 an interior click selected "
+                    f"{share:.2f}% of the image -- outside the band the "
+                    f"default is meant to sit in")
+
+
 def test_embed_protect_and_global_compose(scratch_api):
     api = scratch_api
     if not _embed_ready(api):

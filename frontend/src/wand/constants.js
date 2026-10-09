@@ -116,15 +116,18 @@ export function samTolerance(slider) {
 // (see backend/wand.py embed_features and auto_encoder/ONNX.md). Same
 // construction as SAM's band: the slider spans the measured useful range.
 //
-// Measured by bench_wand.py sources over the project's own labels (see
-// implementation_log.txt): the embed arm peaks around 0.08 mean IoU-wise with
-// the within-10%-of-peak band spanning roughly 0.04..0.10, and IoU collapses
-// past ~0.12 as fills merge whole class mosaics. The floor sits just under
-// the band so the left of the slider still narrows, and the ceiling past the
-// collapse so the right end is visibly "too much" rather than silently pinned.
+// Measured by bench_wand.py sources over 470 labeled regions in 20 images
+// (see implementation_log.txt): the mean-IoU curve peaks at 0.08, the
+// within-10%-of-peak band spans 0.04..0.12, and IoU decays slowly past it
+// (0.253 at 0.20) as fills merge neighbouring regions of the same class.
+// The floor sits just under the band so the left of the slider still
+// narrows, and the ceiling just past it so slider 50 lands on the peak
+// rather than above it -- the same "default belongs on the low side" policy
+// the spectral tolerance follows, since an additive wand punishes
+// over-selection harder than under-selection.
 export const EMBED_TOL_FLOOR = 0.02
-export const EMBED_TOL_CEIL = 0.16
-export const EMBED_TOL_DEFAULT = 50 // = 0.09, mid-band
+export const EMBED_TOL_CEIL = 0.14
+export const EMBED_TOL_DEFAULT = 50 // = 0.08, the measured peak
 
 export function embedTolerance(slider) {
   return EMBED_TOL_FLOOR + (slider / WAND_TOL_MAX) * (EMBED_TOL_CEIL - EMBED_TOL_FLOOR)
