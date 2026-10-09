@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { WAND_TOL_SCALE, samTolerance } from './constants'
+import { WAND_TOL_SCALE, embedTolerance, samTolerance } from './constants'
 import { useWand } from './useWand'
 
 // The wand's state machine, with the backend replaced by a spy. What is worth
@@ -90,18 +90,18 @@ describe('tolerance', () => {
   })
 })
 
-describe('the SAM-features switch', () => {
+describe('the source switch', () => {
   it('swaps the source and the tolerance units, and back again', async () => {
     const { result, select } = setup({ classId: 0 })
     await click(result)
     expect(lastOptions(select).source).toBe('image')
 
-    await act(async () => { result.current.setSamSource(true) })
+    await act(async () => { result.current.setSource('sam') })
     expect(lastOptions(select).source).toBe('sam')
     expect(lastOptions(select).tolerance).toBeCloseTo(samTolerance(50), 10)
     expect(lastOptions(select).level).toBe('fine')
 
-    await act(async () => { result.current.setSamSource(false) })
+    await act(async () => { result.current.setSource('image') })
     expect(lastOptions(select).source).toBe('image')
     expect(lastOptions(select).tolerance).toBe(38 / WAND_TOL_SCALE)
   })
@@ -109,7 +109,7 @@ describe('the SAM-features switch', () => {
   it('keeps one tolerance for every class', async () => {
     const { result, select, rerender } = setup({ classId: 0 })
     await click(result)
-    await act(async () => { result.current.setSamSource(true) })
+    await act(async () => { result.current.setSource('sam') })
     await act(async () => { result.current.setTolerance(80) })
     const wanted = samTolerance(80)
 
@@ -122,12 +122,88 @@ describe('the SAM-features switch', () => {
   it('re-runs on a level change but not on a no-op one', async () => {
     const { result, select } = setup()
     await click(result)
-    await act(async () => { result.current.setSamSource(true) })
+    await act(async () => { result.current.setSource('sam') })
     const before = select.mock.calls.length
     await act(async () => { result.current.setLevel('fine') })  // already fine
     expect(select.mock.calls.length).toBe(before)
     await act(async () => { result.current.setLevel('mid') })
     expect(select.mock.calls.length).toBe(before + 1)
+  })
+
+  it('a no-op source change does not re-run', async () => {
+    const { result, select } = setup()
+    await click(result)
+    const before = select.mock.calls.length
+    await act(async () => { result.current.setSource('image') })  // already image
+    expect(select.mock.calls.length).toBe(before)
+  })
+})
+
+describe('the embed source', () => {
+  it('sends the embed source with its own tolerance mapping', async () => {
+    const { result, select } = setup({ classId: 0 })
+    await click(result)
+    await act(async () => { result.current.setSource('embed') })
+    expect(lastOptions(select).source).toBe('embed')
+    expect(lastOptions(select).tolerance).toBeCloseTo(embedTolerance(50), 10)
+    // The level is a SAM-only knob; it still travels (the backend ignores it)
+    // so the wire shape stays one object.
+    expect(lastOptions(select).level).toBe('fine')
+  })
+
+  it('keeps its own tolerance, separate from SAM and spectral', async () => {
+    const { result, select } = setup({ classId: 0 })
+    await click(result)
+    await act(async () => { result.current.setSource('embed') })
+    await act(async () => { result.current.setTolerance(70) })
+    expect(lastOptions(select).tolerance).toBeCloseTo(embedTolerance(70), 10)
+
+    await act(async () => { result.current.setSource('sam') })
+    expect(lastOptions(select).tolerance).toBeCloseTo(samTolerance(50), 10)
+
+    await act(async () => { result.current.setSource('embed') })
+    expect(lastOptions(select).tolerance).toBeCloseTo(embedTolerance(70), 10)
+
+    await act(async () => { result.current.setSource('image') })
+    expect(lastOptions(select).tolerance).toBe(38 / WAND_TOL_SCALE)
+  })
+
+  it('keeps one tolerance for every class, like SAM', async () => {
+    const { result, select, rerender } = setup({ classId: 0 })
+    await click(result)
+    await act(async () => { result.current.setSource('embed') })
+    await act(async () => { result.current.setTolerance(60) })
+    const wanted = embedTolerance(60)
+    rerender({ tool: { classId: 7, eraser: false, mode: 'wand' } })
+    await new Promise((r) => setTimeout(r, 20))
+    // A class switch must not re-run (one tolerance across classes) nor move
+    // the number.
+    expect(lastOptions(select).tolerance).toBeCloseTo(wanted, 10)
+    expect(lastOptions(select).source).toBe('embed')
+  })
+
+  it('carries every other knob unchanged', async () => {
+    const { result, select } = setup()
+    await click(result)
+    await act(async () => { result.current.setSource('embed') })
+    await act(async () => { result.current.setGlobal(true) })
+    await act(async () => { result.current.setProtect(false) })
+    const o = lastOptions(select)
+    expect(o.source).toBe('embed')
+    expect(o.global).toBe(true)
+    expect(o.protect).toBe(false)
+    expect(o.sample_size).toBe(9)
+  })
+
+  it('switching source re-runs the pending samples', async () => {
+    const { result, select } = setup()
+    await click(result, 1, 1)
+    const before = select.mock.calls.length
+    await act(async () => { result.current.setSource('embed') })
+    expect(select.mock.calls.length).toBe(before + 1)
+    expect(select.mock.calls.at(-1)[0]).toEqual([{ x: 1, y: 1, label: 1 }])
+    await act(async () => { result.current.setSource('sam') })
+    expect(lastOptions(select).source).toBe('sam')
   })
 })
 

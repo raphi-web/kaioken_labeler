@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  SAM_TOL_DEFAULT, WAND_BUDGET_MAX, WAND_BUDGET_MIN, WAND_SAMPLE_DEFAULT,
-  WAND_SAMPLE_MAX, WAND_SAMPLE_MIN, WAND_TOL_DEFAULT, WAND_TOL_MAX,
-  WAND_TOL_MIN, WAND_TOL_SCALE, WAND_TOL_SEEDS, samTolerance, tolSeedKey,
+  EMBED_TOL_DEFAULT, SAM_TOL_DEFAULT, WAND_BUDGET_MAX, WAND_BUDGET_MIN,
+  WAND_SAMPLE_DEFAULT, WAND_SAMPLE_MAX, WAND_SAMPLE_MIN, WAND_TOL_DEFAULT,
+  WAND_TOL_MAX, WAND_TOL_MIN, WAND_TOL_SEEDS, tolSeedKey, toleranceFor,
   wandBudget,
 } from './constants'
 import { drawWandPreview } from './preview'
@@ -32,11 +32,17 @@ const INITIAL = {
   // material" is a property of the material, and the per-class optima span
   // 0.07 to 0.19.
   tolerances: {},
-  // The embedding source keeps one tolerance for every class: its own
-  // per-class figures have not been measured, and inventing seeds for it would
-  // dress a guess up as the spectral wand's evidence.
+  // What the wand measures distance in: 'image' (spectral), 'sam' (SAM2
+  // encoder features) or 'embed' (auto-encoder land-cover embeddings). One
+  // string rather than a bool per source, so a fourth source is an array
+  // entry and not another flag nobody can keep exclusive.
+  source: 'image',
+  // The two embedding sources keep one tolerance for every class: their own
+  // per-class figures have not been measured, and inventing seeds for them
+  // would dress a guess up as the spectral wand's evidence. One field each,
+  // so toggling back and forth restores what each was last set to.
   samTolerance: SAM_TOL_DEFAULT,
-  sam: false,
+  embedTolerance: EMBED_TOL_DEFAULT,
   level: 'fine',
   budgetStep: WAND_BUDGET_MAX, // max = no budget
   sampleSize: WAND_SAMPLE_DEFAULT,
@@ -50,11 +56,19 @@ const INITIAL = {
   everywhere: false,
 }
 
-// The slider position for the active class, or for the embedding source, which
-// is one value for all of them.
+// The slider position for the active class, or for an embedding source, each
+// of which is one value for all classes.
 function sliderFor(settings, classId, seeds) {
-  if (settings.sam) return settings.samTolerance
+  if (settings.source === 'sam') return settings.samTolerance
+  if (settings.source === 'embed') return settings.embedTolerance
   return settings.tolerances[classId] ?? seeds[classId] ?? WAND_TOL_DEFAULT
+}
+
+// Which settings field a slider move writes to.
+function toleranceField(source) {
+  if (source === 'sam') return 'samTolerance'
+  if (source === 'embed') return 'embedTolerance'
+  return 'tolerances'
 }
 
 export function useWand({ active, image, tool, classes, classColors, onSelect, onCommit }) {
@@ -127,9 +141,9 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
       }
       const slider = sliderFor(nextSettings, t.classId, seedsRef.current)
       const selection = await select(positives, {
-        source: nextSettings.sam ? 'sam' : 'image',
+        source: nextSettings.source,
         level: nextSettings.level,
-        tolerance: nextSettings.sam ? samTolerance(slider) : slider / WAND_TOL_SCALE,
+        tolerance: toleranceFor(nextSettings.source, slider),
         // The budget is per sample; the backend applies it to each one
         // independently. With a single shared pot a second click halves what
         // the first one had, and you watch a good selection shrink for adding
@@ -204,9 +218,10 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
     const { tool: t } = latest.current
     const next = clamp(value, WAND_TOL_MIN, WAND_TOL_MAX)
     if (next === sliderFor(s, t.classId, seedsRef.current)) return
-    patch(s.sam
-      ? { samTolerance: next }
-      : { tolerances: { ...s.tolerances, [t.classId]: next } })
+    const field = toleranceField(s.source)
+    patch(field === 'tolerances'
+      ? { tolerances: { ...s.tolerances, [t.classId]: next } }
+      : { [field]: next })
   }, [patch])
 
   const setBudgetStep = useCallback((value) => {
@@ -220,11 +235,13 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
   }, [patch])
 
   // Switching source or level re-runs the clicks already placed rather than
-  // clearing them: seeing the same click measured both ways, or at all three
-  // levels, is the point of having the switch, and the backend caches every
-  // field so flipping back is free. The tolerance swaps with the source by
-  // itself now, since sliderFor reads which one is active.
-  const setSamSource = useCallback((on) => patch({ sam: !!on }), [patch])
+  // clearing them: seeing the same click measured all three ways, or at all
+  // three SAM levels, is the point of having the switch, and the backend
+  // caches every field so flipping back is free. The tolerance swaps with the
+  // source by itself now, since sliderFor reads which one is active.
+  const setSource = useCallback((source) => {
+    if (source !== settingsRef.current.source) patch({ source })
+  }, [patch])
   const setLevel = useCallback((level) => {
     if (level !== settingsRef.current.level) patch({ level })
   }, [patch])
@@ -241,10 +258,10 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
   // to be recomputed when the class changes -- otherwise the preview is the one
   // the previous class's threshold produced while the slider reads the new
   // class's number, and Enter would commit a mask that matches neither.
-  // Skipped when the embedding source is on: it keeps a single tolerance, so a
+  // Skipped for the embedding sources: each keeps a single tolerance, so a
   // class switch changes nothing about the selection.
   useEffect(() => {
-    if (!settingsRef.current.sam && samplesRef.current.length) {
+    if (settingsRef.current.source === 'image' && samplesRef.current.length) {
       run(settingsRef.current, samplesRef.current)
     }
   }, [tool.classId, run])
@@ -264,7 +281,7 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
     protectedCount: result.protected,
     fraction,
     tolerance: slider,                       // slider position, 1..100
-    toleranceValue: samTolerance(slider),    // what "sam" sends; shown beside it
+    toleranceValue: toleranceFor(settings.source, slider), // what the source sends
     budget: wandBudget(settings.budgetStep),
     // Actions
     addSample,
@@ -274,7 +291,7 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
     setTolerance,
     setBudgetStep,
     setSampleSize,
-    setSamSource,
+    setSource,
     setLevel,
     setProtect,
     setGlobal,

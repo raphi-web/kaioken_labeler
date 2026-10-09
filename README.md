@@ -35,6 +35,15 @@ are the only copy**: this build has no exporter, so treat them as source, not
 as a build artifact. Without them the SAM2 button and the wand's SAM-features
 switch stay disabled; everything else still works.
 
+The wand's third distance source, `embed`, needs `auto_encoder/embedding.onnx`
+— same policy: checked in, the only copy, source not artifact. It is an
+8-dim per-pixel land-cover embedding auto-encoder trained on this dataset's
+Sentinel-2 tiles (contract in `auto_encoder/ONNX.md`; the exporter lives in
+the training project, not here). The graph takes exactly 10 bands of raw DN,
+so on a project with any other band count the embed button stays disabled
+with the reason in its tooltip. Without the file, spectral and SAM both keep
+working exactly as before.
+
 ## Projects and classes
 
 A project is a folder of GeoTIFFs plus a `project_config.json` describing the

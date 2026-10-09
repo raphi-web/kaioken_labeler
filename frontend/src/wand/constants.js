@@ -111,6 +111,34 @@ export function samTolerance(slider) {
   return SAM_TOL_FLOOR + (slider / WAND_TOL_MAX) * (SAM_TOL_CEIL - SAM_TOL_FLOOR)
 }
 
+// With the embedding source on, the wand measures a cosine distance between
+// mean-centred 8-dim land-cover embeddings from auto_encoder/embedding.onnx
+// (see backend/wand.py embed_features and auto_encoder/ONNX.md). Same
+// construction as SAM's band: the slider spans the measured useful range.
+//
+// Measured by bench_wand.py sources over the project's own labels (see
+// implementation_log.txt): the embed arm peaks around 0.08 mean IoU-wise with
+// the within-10%-of-peak band spanning roughly 0.04..0.10, and IoU collapses
+// past ~0.12 as fills merge whole class mosaics. The floor sits just under
+// the band so the left of the slider still narrows, and the ceiling past the
+// collapse so the right end is visibly "too much" rather than silently pinned.
+export const EMBED_TOL_FLOOR = 0.02
+export const EMBED_TOL_CEIL = 0.16
+export const EMBED_TOL_DEFAULT = 50 // = 0.09, mid-band
+
+export function embedTolerance(slider) {
+  return EMBED_TOL_FLOOR + (slider / WAND_TOL_MAX) * (EMBED_TOL_CEIL - EMBED_TOL_FLOOR)
+}
+
+// The tolerance a slider position means, in the units of `source`. The three
+// distance measures (RMS band difference, SAM cosine, embed cosine) share
+// nothing but the 1..100 slider, so each maps through its own curve.
+export function toleranceFor(source, slider) {
+  if (source === 'sam') return samTolerance(slider)
+  if (source === 'embed') return embedTolerance(slider)
+  return slider / WAND_TOL_SCALE
+}
+
 // Which encoder feature map to match on (see sam_service.FEATURE_LEVELS). The
 // grid sizes are for the encoder's fixed 1024² input frame, so on a 512px tile
 // "fine" is one cell per 2x2 pixels and "deep" one per 8x8.

@@ -36,10 +36,17 @@ let pushed = []   // every label buffer the app has sent back
 
 function respond(method, args) {
   switch (method) {
+    case 'get_project':
+      // The frontend treats the absence of get_project as the standalone-image
+      // case, so the existing test corpus expects null. The new add_image tests
+      // override this with a real project; that override is per-test via
+      // api.mockImplementationOnce below.
+      return null
     case 'get_image':
       return { name: 't.tif', png: '', width: W, height: H,
                labels: toBase64(seeded()), labeled_pixels: PAINTED }
     case 'sam_available': return { available: false }
+    case 'embed_available': return { available: false }
     case 'set_labels': {
       const buffer = fromBase64(args[0])
       pushed.push(buffer)
@@ -222,5 +229,143 @@ describe('class selection', () => {
     fireEvent.keyDown(window, { key: '3', ctrlKey: true })
     await new Promise((r) => setTimeout(r, 20))
     expect(active()).toContain('Urban')
+  })
+})
+
+const PROJECT = () => ({
+  root: '/p', name: 'demo',
+  // Real enough classes to drive the toolbar's class palette and the brush
+  // cursor's color lookup. The unique foci are the toolbar wiring (Add Image…
+  // exists, Project dropdown enabled) and the dialog round-trip, not the
+  // palette's internal rendering.
+  classes: [
+    { id: 0, name: 'Urban', color: '#e05a4f' },
+    { id: 1, name: 'Road', color: '#4a4a55' },
+    { id: 2, name: 'Agriculture-Green', color: '#3ddc6b' },
+    { id: 3, name: 'Raw-Earth/Agriculture', color: '#c98f3c' },
+  ],
+  data_profile: { input_channels: 4, display_bands: [0, 1, 2],
+                  band_names: ['a', 'b', 'c', 'd'] },
+  paths: { images_folder: '.', masks_user: 'masks_user', masks_ai: 'masks_ai' },
+  images: ['t.tif'], active: 't.tif' })
+
+/** Mount the app with a real-looking project so the Project dropdown is enabled. */
+async function mountWithProject() {
+  api.mockImplementationOnce(async (method) => {
+    if (method === 'get_project') return PROJECT()
+    return respond(method, [])
+  })
+  return mount()
+}
+
+describe('add image to project', () => {
+  it('offers an Add Image entry in the Project dropdown', async () => {
+    await mountWithProject()
+    fireEvent.click(screen.getByRole('button', { name: /Project/ }))
+    expect(screen.getByRole('button', { name: 'Add Image…' })).toBeTruthy()
+  })
+
+  it('asks the backend to add the chosen file', async () => {
+    await mountWithProject()
+    api.mockImplementationOnce(async (method) => {
+      if (method === 'pick_file') return { path: 'fresh.tif' }
+      return { ok: true }
+    })
+    api.mockImplementationOnce(async (method) => {
+      if (method === 'add_image') return { ok: true, name: 'fresh.tif',
+                                            width: W, height: H, bands: 4,
+                                            project: { images: ['t.tif', 'fresh.tif'] } }
+      return { ok: true }
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Project/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Image…' }))
+    await waitFor(() => expect(api).toHaveBeenCalledWith('add_image', 'fresh.tif', false))
+  })
+
+  it('shows a confirmation modal when the dimensions differ', async () => {
+    await mountWithProject()
+    api.mockImplementationOnce(async (method) => {
+      if (method === 'pick_file') return { path: 'fresh.tif' }
+      return { ok: true }
+    })
+    api.mockImplementationOnce(async (method, source) => {
+      if (method === 'add_image') return {
+        ok: false, requires_confirm: true, source,
+        existing: { width: W, height: H, name: 't.tif' },
+        candidate: { width: W + 8, height: H + 8, name: 'fresh.tif', bands: 4 },
+      }
+      return { ok: true }
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Project/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Image…' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain(`${W}×${H}`)
+    expect(dialog.textContent).toContain(`${W + 8}×${H + 8}`)
+  })
+
+  it('re-calls add_image with force=true on confirm', async () => {
+    await mountWithProject()
+    api.mockImplementationOnce(async (method) => {
+      if (method === 'pick_file') return { path: 'fresh.tif' }
+      return { ok: true }
+    })
+    api.mockImplementationOnce(async (method, source) => {
+      if (method === 'add_image') return {
+        ok: false, requires_confirm: true, source,
+        existing: { width: W, height: H, name: 't.tif' },
+        candidate: { width: W + 8, height: H + 8, name: 'fresh.tif', bands: 4 },
+      }
+      return { ok: true }
+    })
+    api.mockImplementationOnce(async (method, source, force) => {
+      if (method === 'add_image' && force === true) return {
+        ok: true, name: 'fresh.tif', width: W + 8, height: H + 8, bands: 4,
+        project: { images: ['t.tif', 'fresh.tif'] },
+      }
+      return { ok: true }
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Project/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Image…' }))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Add anyway' }))
+    await waitFor(() => expect(api).toHaveBeenCalledWith('add_image', 'fresh.tif', true))
+  })
+
+  it('just closes the dialog on Cancel', async () => {
+    await mountWithProject()
+    api.mockImplementationOnce(async (method) => {
+      if (method === 'pick_file') return { path: 'fresh.tif' }
+      return { ok: true }
+    })
+    api.mockImplementationOnce(async (method, source) => {
+      if (method === 'add_image') return {
+        ok: false, requires_confirm: true, source,
+        existing: { width: W, height: H, name: 't.tif' },
+        candidate: { width: W + 8, height: H + 8, name: 'fresh.tif', bands: 4 },
+      }
+      return { ok: true }
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Project/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Image…' }))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    const addCalls = api.mock.calls.filter(([m]) => m === 'add_image')
+    expect(addCalls).toHaveLength(1)
+  })
+
+  it('surfaces an error from the backend as a toast', async () => {
+    await mountWithProject()
+    api.mockImplementationOnce(async (method) => {
+      if (method === 'pick_file') return { path: 'fresh.tif' }
+      return { ok: true }
+    })
+    api.mockImplementationOnce(async (method) => {
+      if (method === 'add_image') return { ok: false, error: 'no good' }
+      return { ok: true }
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Project/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Image…' }))
+    await waitFor(() => expect(screen.getByText('no good')).toBeTruthy())
   })
 })

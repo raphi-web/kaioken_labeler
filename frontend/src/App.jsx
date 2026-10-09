@@ -5,6 +5,7 @@ import { classColorsMap } from './colors'
 import ClassPalette from './components/ClassPalette'
 import ContextMenu from './components/ContextMenu'
 import LabelerPane from './components/LabelerPane'
+import AddImageConfirm from './components/AddImageConfirm'
 import ProjectSetup from './components/ProjectSetup'
 import ThumbnailStrip from './components/ThumbnailStrip'
 import Toast from './components/Toast'
@@ -32,6 +33,10 @@ export default function App() {
   const [menu, setMenu] = useState(null) // {name, x, y} while a thumbnail menu is open
   const [menuError, setMenuError] = useState('')
   const [samAvailable, setSamAvailable] = useState(false) // Efficient-SAM2 files present
+  // Whether the auto-encoder wand source can run: the model is global, but the
+  // 10-band gate depends on the open project -- so this refetches on every
+  // project change rather than once at mount.
+  const [embedAvailable, setEmbedAvailable] = useState(false)
   // Transient status messages ("Labels cleared", "Project opened", etc.) shown
   // as a fading toast at the bottom-center of the window. Single-message at a
   // time: a new showToast replaces the previous, which keeps the UI honest
@@ -77,6 +82,49 @@ export default function App() {
       if (!next.delete(id)) next.add(id)
       return next
     })
+  }
+
+  // The add-image flow: open a native file picker, ask the backend to copy
+  // the chosen file into the project, and either apply a fresh project list
+  // back (so the new image shows up in the strip) or -- on a size or
+  // bandwidth mismatch -- show a confirmation dialog first.
+  //
+  // The dialog callback is the one place that re-calls the backend with
+  // force=true; the rest of the wiring is a single async function so the
+  // success and error paths look the same regardless of whether the user
+  // confirmed the dialog or skipped it.
+  const [addImageConfirm, setAddImageConfirm] = useState(null)
+  // Latest values the deferred callback reads, so the picker closure we
+  // hand off can find the source path the user picked three frames later.
+  const pendingSourceRef = useRef(null)
+
+  async function performAddImage(source, force = false) {
+    const res = await api('add_image', source, force)
+    if (res?.requires_confirm) {
+      pendingSourceRef.current = source
+      setAddImageConfirm({ source, existing: res.existing,
+                           candidate: res.candidate })
+      return
+    }
+    if (!res?.ok) {
+      showToast(res?.error || 'Could not add image')
+      return
+    }
+    // Stand-alone images (no project yet) only get here when run through
+    // setup; the toolbar entry is disabled when hasProject is false, so the
+    // happy path is always "set project, refresh thumbnails".
+    if (res.project) setProject(res.project)
+    // New image is added but not loaded; keep the user on what they were
+    // painting. The thumbnail + label scan threads pick the new file up on
+    // their next tick.
+    showToast(`Added ${res.name} (${res.width}×${res.height} px)`)
+  }
+
+  async function handleAddImage() {
+    if (!project) return
+    const res = await api('pick_file')
+    if (!res?.path) return // user cancelled the picker
+    performAddImage(res.path)
   }
 
   // Every path that picks a class goes through here -- the palette and the
@@ -127,6 +175,12 @@ export default function App() {
     api('get_image').then(applyImagePayload)
     api('sam_available').then((r) => setSamAvailable(!!r.available))
   }, [])
+
+  // The embed gate depends on the open project's band count, so it is
+  // re-checked whenever the project changes (open, create, reopen-on-paths).
+  useEffect(() => {
+    api('embed_available').then((r) => setEmbedAvailable(!!r.available))
+  }, [project?.root])
 
   // Poll thumbnail generation while it runs; thumbnails appear as they finish.
   useEffect(() => {
@@ -534,6 +588,7 @@ export default function App() {
         hasProject={!!project}
         onNewProject={handleNewProject}
         onNewFromGeotiff={handleNewFromGeotiff}
+        onAddImage={handleAddImage}
         onSaveProject={() => handleExport('save_project')}
         onSaveUserMask={async () => { await pushLabels(); await handleExport('save_user_mask') }}
         onOpenSettings={handleOpenSettings}
@@ -569,6 +624,7 @@ export default function App() {
           hiddenClasses={hiddenClasses}
           fitRef={fitRef}
           samAvailable={samAvailable}
+          embedAvailable={embedAvailable}
         />
       </div>
       <ThumbnailStrip
@@ -611,6 +667,22 @@ export default function App() {
       )}
       {menuError && <div className="floating-error">{menuError}</div>}
       <Toast message={toast} onDismiss={() => setToast('')} />
+      {addImageConfirm && (
+        <AddImageConfirm
+          existing={addImageConfirm.existing}
+          candidate={addImageConfirm.candidate}
+          onConfirm={() => {
+            const source = pendingSourceRef.current
+            setAddImageConfirm(null)
+            pendingSourceRef.current = null
+            if (source) performAddImage(source, true)
+          }}
+          onCancel={() => {
+            setAddImageConfirm(null)
+            pendingSourceRef.current = null
+          }}
+        />
+      )}
       {setup && (
         <ProjectSetup
           mode={setup.mode}
