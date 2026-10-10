@@ -258,6 +258,11 @@ def main():
                         {"sample_size": 9, "source": "sam", "level": "fine"}),
                 "embed": ([round(0.02 + 0.02 * i, 3) for i in range(20)],
                           {"sample_size": 9, "source": "embed"}),
+                # Mean-shift shares the spectral units but on a much sharper
+                # field (intra/inter 0.27 vs 0.64), so its band sits well
+                # below the spectral one; sweep 0.01..0.30 finely.
+                "mean": ([round(0.01 + 0.01 * i, 3) for i in range(30)],
+                         {"sample_size": 9, "source": "meanshift"}),
             }
             sweep = [(f"{name[:4]}{t}", {**base, "tolerance": t})
                      for name, (tols, base) in arms.items() for t in tols]
@@ -265,8 +270,8 @@ def main():
             report_sources(rows, names,
                            {name: [f"{name[:4]}{t}" for t in tols]
                             for name, (tols, _) in arms.items()})
-            report_curves(rows, [("embe" + str(t), t) for t in arms["embed"][0]],
-                          "embed tolerance curve (anchors EMBED_TOL_*)")
+            report_curves(rows, [("mean" + str(t), t) for t in arms["mean"][0]],
+                          "meanshift tolerance curve (anchors MS_TOL_*)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

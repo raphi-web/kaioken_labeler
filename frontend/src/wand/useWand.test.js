@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { WAND_TOL_SCALE, embedTolerance, samTolerance } from './constants'
+import { MS_TOL_DEFAULT, WAND_TOL_SCALE, embedTolerance, msTolerance, samTolerance } from './constants'
 import { useWand } from './useWand'
 
 // The wand's state machine, with the backend replaced by a spy. What is worth
@@ -204,6 +204,55 @@ describe('the embed source', () => {
     expect(select.mock.calls.at(-1)[0]).toEqual([{ x: 1, y: 1, label: 1 }])
     await act(async () => { result.current.setSource('sam') })
     expect(lastOptions(select).source).toBe('sam')
+  })
+})
+
+describe('the mean-shift source', () => {
+  it('sends the meanshift source with its own tolerance mapping', async () => {
+    const { result, select } = setup({ classId: 0 })
+    await click(result)
+    await act(async () => { result.current.setSource('meanshift') })
+    expect(lastOptions(select).source).toBe('meanshift')
+    expect(lastOptions(select).tolerance).toBeCloseTo(msTolerance(MS_TOL_DEFAULT), 10)
+  })
+
+  it('keeps its own tolerance, separate from the other three', async () => {
+    const { result, select } = setup({ classId: 0 })
+    await click(result)
+    await act(async () => { result.current.setSource('meanshift') })
+    await act(async () => { result.current.setTolerance(65) })
+    expect(lastOptions(select).tolerance).toBeCloseTo(msTolerance(65), 10)
+
+    await act(async () => { result.current.setSource('embed') })
+    expect(lastOptions(select).tolerance).toBeCloseTo(embedTolerance(50), 10)
+
+    await act(async () => { result.current.setSource('meanshift') })
+    expect(lastOptions(select).tolerance).toBeCloseTo(msTolerance(65), 10)
+
+    await act(async () => { result.current.setSource('image') })
+    expect(lastOptions(select).tolerance).toBe(38 / WAND_TOL_SCALE)
+  })
+
+  it('shares the spectral units: sample size is pixels, not cells', async () => {
+    // The mean-shift field is an RMS colour distance like the spectral one,
+    // so WandControls must say "px" for it -- only SAM counts feature cells.
+    const { result, select } = setup()
+    await click(result)
+    await act(async () => { result.current.setSource('meanshift') })
+    await act(async () => { result.current.setSampleSize(16) })
+    expect(lastOptions(select).sample_size).toBe(16)
+  })
+
+  it('carries protect and global unchanged', async () => {
+    const { result, select } = setup()
+    await click(result)
+    await act(async () => { result.current.setSource('meanshift') })
+    await act(async () => { result.current.setGlobal(true) })
+    await act(async () => { result.current.setProtect(false) })
+    const o = lastOptions(select)
+    expect(o.source).toBe('meanshift')
+    expect(o.global).toBe(true)
+    expect(o.protect).toBe(false)
   })
 })
 

@@ -52,6 +52,16 @@ function sources({ samAvailable, embedAvailable }) {
         : 'Embedding model missing (auto_encoder/embedding.onnx), or this '
           + 'project is not a 10-band stack',
     },
+    {
+      id: 'meanshift', label: 'mean-shift', available: true,
+      title: 'The spectral measure on a mean-shift-filtered image: PCA to '
+        + '3 components, then every pixel walks to the mode of its '
+        + 'spatio-colour neighbourhood (OpenCV pyrMeanShiftFiltering). Each '
+        + 'material collapses onto one near-constant colour and the boundary '
+        + 'between materials sharpens, so a tolerance that drifts on raw '
+        + 'bands becomes a cliff here. Costs one filter pass per image '
+        + '(~0.25 s), and works on any band count.',
+    },
   ]
 }
 
@@ -59,32 +69,45 @@ export default function WandControls({ wand, samAvailable, embedAvailable }) {
   const { settings } = wand
   const samSource = settings.source === 'sam'
   const embedding = samSource || settings.source === 'embed'
+  const msSource = settings.source === 'meanshift'
+  // The slider maps through a source-specific curve whenever the tolerance is
+  // not the plain spectral slider/200 -- so the mapped number is shown for all
+  // of them, mean-shift included.
+  const mapped = embedding || msSource
+
+  const toleranceTitle = msSource
+    ? 'RMS colour distance on the mean-shift-filtered image, in the same '
+      + '[0,1] units as spectral -- but each material has already collapsed '
+      + 'onto one near-constant colour, so the number that separates a '
+      + 'region from its surroundings is small and sharp. One value for '
+      + 'every class.'
+    : embedding
+      ? 'Cosine distance between mean-centred feature vectors: how '
+        + 'differently the encoder describes a pixel from the one you '
+        + 'clicked. Measured against this image\'s own mean feature, so '
+        + 'the number is relative to the variety in the tile in front of '
+        + 'you — the same setting can bite differently on a uniform '
+        + 'tile and a busy one. One value for every class, since '
+        + 'per-class optima have not been measured for the embedding '
+        + 'sources.'
+      : 'Spectral distance from the sampled colour, across every '
+        + 'band of the image rather than the three shown on screen. '
+        + 'Measured as an RMS per-band difference, so the number means '
+        + 'the same thing whatever the band count.\n\n'
+        + 'Kept per class: each class starts at the tolerance measured '
+        + 'best for that material (they range from 14 for Water to 38 '
+        + 'for Urban) and then remembers whatever you set it to.'
 
   return (
     <div className="wand-controls">
       <label
         className="opacity-control"
-        title={embedding
-          ? 'Cosine distance between mean-centred feature vectors: how '
-            + 'differently the encoder describes a pixel from the one you '
-            + 'clicked. Measured against this image\'s own mean feature, so '
-            + 'the number is relative to the variety in the tile in front of '
-            + 'you — the same setting can bite differently on a uniform '
-            + 'tile and a busy one. One value for every class, since '
-            + 'per-class optima have not been measured for the embedding '
-            + 'sources.'
-          : 'Spectral distance from the sampled colour, across every '
-            + 'band of the image rather than the three shown on screen. '
-            + 'Measured as an RMS per-band difference, so the number means '
-            + 'the same thing whatever the band count.\n\n'
-            + 'Kept per class: each class starts at the tolerance measured '
-            + 'best for that material (they range from 14 for Water to 38 '
-            + 'for Urban) and then remembers whatever you set it to.'}
+        title={toleranceTitle}
       >
         {/* The cosine value alongside the slider position, since the band
             that works is narrow and worth being able to name. */}
         tolerance {wand.tolerance}
-        {embedding ? ` (${wand.toleranceValue.toFixed(2)})` : ''}
+        {mapped ? ` (${wand.toleranceValue.toFixed(3)})` : ''}
         <input
           type="range"
           min={WAND_TOL_MIN}

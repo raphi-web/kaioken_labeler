@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  EMBED_TOL_DEFAULT, SAM_TOL_DEFAULT, WAND_BUDGET_MAX, WAND_BUDGET_MIN,
-  WAND_SAMPLE_DEFAULT, WAND_SAMPLE_MAX, WAND_SAMPLE_MIN, WAND_TOL_DEFAULT,
-  WAND_TOL_MAX, WAND_TOL_MIN, WAND_TOL_SEEDS, tolSeedKey, toleranceFor,
-  wandBudget,
+  EMBED_TOL_DEFAULT, MS_TOL_DEFAULT, SAM_TOL_DEFAULT, WAND_BUDGET_MAX,
+  WAND_BUDGET_MIN, WAND_SAMPLE_DEFAULT, WAND_SAMPLE_MAX, WAND_SAMPLE_MIN,
+  WAND_TOL_DEFAULT, WAND_TOL_MAX, WAND_TOL_MIN, WAND_TOL_SEEDS, tolSeedKey,
+  toleranceFor, wandBudget,
 } from './constants'
 import { drawWandPreview } from './preview'
 
@@ -33,16 +33,18 @@ const INITIAL = {
   // 0.07 to 0.19.
   tolerances: {},
   // What the wand measures distance in: 'image' (spectral), 'sam' (SAM2
-  // encoder features) or 'embed' (auto-encoder land-cover embeddings). One
-  // string rather than a bool per source, so a fourth source is an array
-  // entry and not another flag nobody can keep exclusive.
+  // encoder features), 'embed' (auto-encoder land-cover embeddings) or
+  // 'meanshift' (spectral on a mean-shift-filtered PCA image). One string
+  // rather than a bool per source, so a fifth source is an array entry and
+  // not another flag nobody can keep exclusive.
   source: 'image',
-  // The two embedding sources keep one tolerance for every class: their own
+  // The embedding sources keep one tolerance for every class: their own
   // per-class figures have not been measured, and inventing seeds for them
   // would dress a guess up as the spectral wand's evidence. One field each,
   // so toggling back and forth restores what each was last set to.
   samTolerance: SAM_TOL_DEFAULT,
   embedTolerance: EMBED_TOL_DEFAULT,
+  msTolerance: MS_TOL_DEFAULT,
   level: 'fine',
   budgetStep: WAND_BUDGET_MAX, // max = no budget
   sampleSize: WAND_SAMPLE_DEFAULT,
@@ -56,11 +58,12 @@ const INITIAL = {
   everywhere: false,
 }
 
-// The slider position for the active class, or for an embedding source, each
-// of which is one value for all classes.
+// The slider position for the active class, or for a non-spectral source,
+// each of which is one value for all classes.
 function sliderFor(settings, classId, seeds) {
   if (settings.source === 'sam') return settings.samTolerance
   if (settings.source === 'embed') return settings.embedTolerance
+  if (settings.source === 'meanshift') return settings.msTolerance
   return settings.tolerances[classId] ?? seeds[classId] ?? WAND_TOL_DEFAULT
 }
 
@@ -68,6 +71,7 @@ function sliderFor(settings, classId, seeds) {
 function toleranceField(source) {
   if (source === 'sam') return 'samTolerance'
   if (source === 'embed') return 'embedTolerance'
+  if (source === 'meanshift') return 'msTolerance'
   return 'tolerances'
 }
 

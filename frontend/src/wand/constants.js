@@ -135,12 +135,27 @@ export function embedTolerance(slider) {
   return EMBED_TOL_FLOOR + (slider / WAND_TOL_MAX) * (EMBED_TOL_CEIL - EMBED_TOL_FLOOR)
 }
 
+// The mean-shift source measures the SAME thing as spectral -- an RMS colour
+// distance in [0,1] -- but on the mean-shift-filtered PCA image, where each
+// material has already collapsed onto one near-constant colour. The usable
+// band therefore sits at different numbers than spectral's, and gets its own
+// mapping. Numbers provisional until the bench_wand.py sources run with the
+// "mean" arm lands (see implementation_log.txt).
+export const MS_TOL_FLOOR = 0.01
+export const MS_TOL_CEIL = 0.30
+export const MS_TOL_DEFAULT = 30 // ~0.097; re-sighted from the bench curve
+
+export function msTolerance(slider) {
+  return MS_TOL_FLOOR + (slider / WAND_TOL_MAX) * (MS_TOL_CEIL - MS_TOL_FLOOR)
+}
+
 // The tolerance a slider position means, in the units of `source`. The three
 // distance measures (RMS band difference, SAM cosine, embed cosine) share
 // nothing but the 1..100 slider, so each maps through its own curve.
 export function toleranceFor(source, slider) {
   if (source === 'sam') return samTolerance(slider)
   if (source === 'embed') return embedTolerance(slider)
+  if (source === 'meanshift') return msTolerance(slider)
   return slider / WAND_TOL_SCALE
 }
 
