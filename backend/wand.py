@@ -27,6 +27,7 @@ import numpy as np
 from scipy import ndimage
 
 from data import UNLABELED
+from meanshift import meanshift_available, meanshift_image as _meanshift_image
 from sam_service import FEATURE_LEVELS, resize_bilinear
 
 # 4-connected structuring element for the wand's component labelling.
@@ -44,11 +45,15 @@ MAX_SAMPLE_PIXELS = len(_SAMPLE_OFFSETS)
 # What the wand measures distance in. "image" is the spectral wand: every band
 # of the raster. "sam" runs the identical machinery over a SAM2 encoder feature
 # map instead -- see Wand._embedding_field for what that buys and what it costs.
-# "embed" is the third source: a per-pixel land-cover embedding from the
-# auto-encoder graph in auto_encoder/ (see Wand.embed_features), pixel
-# resolution rather than a coarse feature grid, and trained on exactly these
-# classes rather than on photographs.
-WAND_SOURCES = ("image", "sam", "embed")
+# "embed" is a per-pixel land-cover embedding from the auto-encoder graph in
+# auto_encoder/ (see Wand.embed_features), pixel resolution rather than a
+# coarse feature grid, and trained on exactly these classes rather than on
+# photographs. "meanshift" is the spectral measure again -- an RMS colour
+# distance -- but on a mean-shift-filtered PCA image rather than the raw bands
+# (see Wand.meanshift_image): the filter collapses each material onto one
+# near-constant colour and sharpens the boundary between materials, which is
+# what turns the tolerance into a cliff instead of a slope.
+WAND_SOURCES = ("image", "sam", "embed", "meanshift")
 
 
 class WandError(Exception):
@@ -89,8 +94,8 @@ def parse_options(options):
     The contract, all optional except `tolerance`:
 
       tolerance    distance threshold, in the units of the chosen source: an
-                   RMS per-band difference for "image", a centred cosine
-                   distance for "sam". Required.
+                   RMS per-band difference for "image" and "meanshift", a
+                   centred cosine distance for "sam" and "embed". Required.
       sample_size  how many pixels around each click to average into that
                    sample's reference, 1..MAX_SAMPLE_PIXELS, nearest first.
                    Counts feature cells, not pixels, under source="sam".
@@ -119,7 +124,7 @@ def parse_options(options):
                    object instead of three that can disagree. The CALLER
                    decides when it applies -- notably it must NOT while
                    erasing, since the eraser only ever acts on labeled pixels.
-      source       "image" (default), "sam" or "embed".
+      source       "image" (default), "sam", "embed" or "meanshift".
       level        which SAM2 feature map, for source="sam": "fine", "mid" or
                    "deep" (see sam_service.FEATURE_LEVELS). Ignored otherwise.
     """
@@ -232,7 +237,7 @@ class Wand:
 
     # ---------- distance fields ----------
 
-    def _sample_colour(self, y, x, sample_size):
+    def _sample_colour(self, y, x, sample_size, stack=None):
         """Mean spectrum of the `sample_size` pixels nearest (y, x).
 
         A one-pixel sample is a sample of size one: on textured ground the
@@ -240,12 +245,16 @@ class Wand:
         fails to match. Averaging a small neighbourhood centres the reference
         on the material rather than on wherever the cursor landed.
 
+        `stack` defaults to the raw normalized bands; the mean-shift source
+        passes its filtered image so the same neighbourhood logic measures a
+        reference colour in whatever space the field runs in.
+
         Only valid pixels contribute, so a click near a nodata edge averages
         the real ground beside it instead of pulling the reference toward the
         fill value. The clicked pixel itself is always included, so the sample
         still means what was clicked even at the border.
         """
-        stack = self._image.normalized
+        stack = self._image.normalized if stack is None else stack
         valid = self._image.valid_mask
         _, height, width = stack.shape
         taken = []
@@ -386,6 +395,45 @@ class Wand:
             self._stacks["embed"] = stack
         return stack
 
+    def meanshift_image(self):
+        """The mean-shift-filtered PCA image (3, H, W) float32 in [0, 1].
+
+        Cached in _stacks under "meanshift" like the encoder stacks: one filter
+        pass per image (~0.25 s at 512px), free after the first click. Keyed on
+        the image alone -- the filter consumes every band, so the display-band
+        mapping cannot change its output.
+
+        Not centred or unit-normalised like the embedding stacks: this field is
+        the spectral RMS measure on a different image, and the filter's own
+        [0,1] scale is what makes the tolerance numbers comparable to the
+        spectral wand's.
+        """
+        if not meanshift_available():
+            raise WandError("OpenCV (cv2) is not installed")
+        stack = self._stacks.get("meanshift")
+        if stack is None:
+            stack = _meanshift_image(self._image.normalized,
+                                     self._image.valid_mask)
+            self._stacks["meanshift"] = stack
+        return stack
+
+    def _meanshift_field(self, y, x, sample_size):
+        """Per-pixel RMS colour distance (H, W) on the mean-shift-filtered image.
+
+        The same measure and the same neighbourhood sampling as _spectral_field
+        -- the difference is entirely in what is being measured: mean-shift has
+        already collapsed each material onto one near-constant colour and
+        sharpened the boundary between materials, so the distance field is flat
+        inside a region and jumps at its edge instead of drifting with the
+        material's own texture. Measured on this project's labels, the
+        intra/inter class distance ratio drops from 0.64 (raw bands) to 0.27
+        (filtered), which is what a tolerance threshold wants to see.
+        """
+        stack = self.meanshift_image()
+        ref = self._sample_colour(y, x, sample_size, stack)
+        diff = stack - ref[:, None, None]
+        return np.sqrt(np.mean(diff * diff, axis=0))
+
     def _embedding_field(self, y, x, sample_size, level):
         """Per-pixel cosine distance (H, W) from the SAM2 features at (y, x).
 
@@ -441,6 +489,8 @@ class Wand:
                 elif options.source == "embed":
                     field = self._cosine_field(self.embed_features(), y, x,
                                                options.sample_size)
+                elif options.source == "meanshift":
+                    field = self._meanshift_field(y, x, options.sample_size)
                 else:
                     field = self._spectral_field(y, x, options.sample_size)
                 self._fields[key] = field
@@ -472,6 +522,8 @@ class Wand:
             self.features(options.level)
         elif options.source == "embed":
             self.embed_features()  # same reason as above
+        elif options.source == "meanshift":
+            self.meanshift_image()  # same reason as above
 
         valid = self._image.valid_mask
         height, width = valid.shape

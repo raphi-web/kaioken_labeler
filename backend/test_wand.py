@@ -669,3 +669,133 @@ def test_embed_available_reports_the_model_state(scratch_api):
     if r["available"] != expected:
         pytest.fail(f"embed_available says {r}, expected available={expected} "
                     f"(reason={reason}, bands={bands})")
+
+# ---------- the mean-shift source ----------
+#
+# The spectral measure on a mean-shift-filtered PCA image. It shares the RMS
+# units with "image", so the invariants that matter here are (a) it is really
+# a different field, (b) it is sharper -- the whole reason it exists -- and
+# (c) the shared wand machinery still behaves over it.
+
+MS_TOL = 0.10  # provisional until the bench measures the band; see implementation_log
+
+
+def _ms_ready(api):
+    from meanshift import meanshift_available
+    if not meanshift_available():
+        pytest.skip("OpenCV unavailable")
+    return True
+
+
+def _ms_select(api, samples, **options):
+    opts = {"source": "meanshift", "tolerance": MS_TOL, "sample_size": 9}
+    opts.update(options)
+    return api.wand_select([[x, y] for x, y in samples], opts)
+
+
+def test_the_meanshift_field_is_rms_at_pixel_resolution(scratch_api):
+    api = scratch_api
+    if not _ms_ready(api):
+        return
+    _, field = _field(api, A, "meanshift", size=1)
+    if field.shape != (api._image.height, api._image.width):
+        pytest.fail(f"field is {field.shape}")
+    if not np.isfinite(field).all():
+        pytest.fail("field has non-finite values")
+    # RMS of 3 components in [0,1]: bounded by 1, and exact-zero at the click
+    # with a one-pixel sample (pixel resolution, like embed, unlike SAM).
+    if field.min() < -1e-6 or field.max() > 1 + 1e-6:
+        pytest.fail(f"RMS distance out of [0, 1]: {field.min()}..{field.max()}")
+    if field[A[1], A[0]] > 1e-5:
+        pytest.fail(f"click not at distance 0: {field[A[1], A[0]]}")
+
+
+def test_meanshift_measures_something_of_its_own(scratch_api):
+    """Not an alias of the spectral field, despite sharing its units."""
+    api = scratch_api
+    if not _ms_ready(api):
+        return
+    _, spectral = _field(api, A, "image")
+    _, ms = _field(api, A, "meanshift")
+    if np.allclose(spectral, ms):
+        pytest.fail("the mean-shift field is identical to the spectral one")
+
+
+def test_meanshift_is_sharper_than_spectral(scratch_api):
+    """The property the source exists for, measured on this project's labels.
+
+    Same-label pixels must sit closer together, relative to different-label
+    pixels, than they do in the raw bands -- otherwise the filter is
+    decoration. Uses the image's own user labels; skips if there are none.
+    A generous margin (ratio must improve by >10%) keeps it a regression
+    guard rather than a knife-edge number.
+    """
+    api = scratch_api
+    if not _ms_ready(api):
+        return
+    labels = api._labels
+    if labels is None:
+        pytest.skip("no labels")
+    classes = [c for c in np.unique(labels)
+               if c != 255 and (labels == c).sum() >= 400]
+    if len(classes) < 2:
+        pytest.skip("fewer than two labeled classes")
+    rng = np.random.default_rng(0)
+
+    def ratio(field):
+        coords = {c: np.argwhere(labels == c) for c in classes}
+        intra = []
+        for c in classes:
+            p = coords[c]
+            idx = rng.choice(len(p), 300, replace=len(p) < 300)
+            pts = p[idx]
+            v = field[pts[:, 0], pts[:, 1]]
+            intra.append(float(v.mean()))
+        inter = []
+        for i, a in enumerate(classes):
+            for b in classes[i + 1:]:
+                pa = coords[a][rng.choice(len(coords[a]), 300, replace=len(coords[a]) < 300)]
+                pb = coords[b][rng.choice(len(coords[b]), 300, replace=len(coords[b]) < 300)]
+                inter.append(float(np.sqrt(((field[pa[:, 0], pa[:, 1]].mean()
+                                             - field[pb[:, 0], pb[:, 1]].mean()) ** 2))))
+        return float(np.mean(intra)) / max(float(np.mean(inter)), 1e-9)
+
+    _, spectral = _field(api, A, "image")
+    _, ms = _field(api, A, "meanshift")
+    r_spec, r_ms = ratio(spectral), ratio(ms)
+    if r_ms > 0.9 * r_spec:
+        pytest.fail(f"mean-shift did not sharpen the labels: intra/inter "
+                    f"{r_ms:.3f} vs spectral {r_spec:.3f}")
+
+
+def test_meanshift_keeps_the_additivity_invariant(scratch_api):
+    api = scratch_api
+    if not _ms_ready(api):
+        return
+    one = _mask(_ms_select(api, [A], protect=False))
+    two = _mask(_ms_select(api, [A, B], protect=False))
+    lost = int((one & ~two).sum())
+    if lost:
+        pytest.fail(f"a second mean-shift sample dropped {lost} px the first had selected")
+
+
+def test_meanshift_selection_is_deterministic_and_respects_the_budget(scratch_api):
+    api = scratch_api
+    if not _ms_ready(api):
+        return
+    first = _mask(_ms_select(api, [A], protect=False))
+    again = _mask(_ms_select(api, [A], protect=False))
+    if not np.array_equal(first, again):
+        pytest.fail("two identical mean-shift selections disagree")
+    capped = _ms_select(api, [A], protect=False, max_pixels=BUDGET)
+    if capped["count"] > BUDGET:
+        pytest.fail(f"budget ignored on mean-shift: {capped['count']} > {BUDGET}")
+
+
+def test_meanshift_ignores_the_sam_only_level_option(scratch_api):
+    api = scratch_api
+    if not _ms_ready(api):
+        return
+    r = _ms_select(api, [A], level="nonsense")
+    if not r.get("ok"):
+        pytest.fail(f"meanshift should ignore the level option, got: {r.get('error')}")
