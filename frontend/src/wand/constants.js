@@ -139,11 +139,19 @@ export function embedTolerance(slider) {
 // distance in [0,1] -- but on the mean-shift-filtered PCA image, where each
 // material has already collapsed onto one near-constant colour. The usable
 // band therefore sits at different numbers than spectral's, and gets its own
-// mapping. Numbers provisional until the bench_wand.py sources run with the
-// "mean" arm lands (see implementation_log.txt).
-export const MS_TOL_FLOOR = 0.01
-export const MS_TOL_CEIL = 0.30
-export const MS_TOL_DEFAULT = 30 // ~0.097; re-sighted from the bench curve
+// mapping.
+//
+// Measured by bench_wand.py sources over 385 labeled regions in 20 images
+// (see implementation_log.txt): the mean-IoU curve peaks at 0.08 (0.432,
+// the best of all four sources), the within-10%-of-peak band spans
+// 0.05..0.10, and IoU collapses past 0.15 as fills jump the sharpened
+// boundaries into the next material. Same construction as embed's band:
+// floor just under, ceiling just over, slider 50 = the peak. The narrow band
+// is the point -- a sharp field means the useful tolerances are CLOSE
+// together, which is what "finer tolerance" asks of a slider.
+export const MS_TOL_FLOOR = 0.02
+export const MS_TOL_CEIL = 0.14
+export const MS_TOL_DEFAULT = 50 // = 0.08, the measured peak
 
 export function msTolerance(slider) {
   return MS_TOL_FLOOR + (slider / WAND_TOL_MAX) * (MS_TOL_CEIL - MS_TOL_FLOOR)

@@ -3,6 +3,62 @@
 Rationale and measurements that do not belong in source comments. Newest
 entry first.
 
+## 2026-10-09 — mean-shift as the wand's fourth source (Senpai's idea)
+
+PCA(3 bands) -> uint8 -> cv2.pyrMeanShiftFiltering(sp=7, sr=25,
+maxIter=10, maxLevel=1), then the spectral RMS measure on the filtered
+image. Motivation: "finer tolerance" on the embeddings -- the embed IoU
+curve is flat (everything 0.04..0.14 scores the same), because the field
+itself is soft. Mean-shift pre-converges each material to one near-constant
+colour, which turns the tolerance into a cliff you can aim at.
+
+Validation before building (probe on 026.tif + labels): intra/inter class
+distance ratio 0.642 (raw spectral) -> 0.268 (mean-shift filtered), i.e.
+2.4x sharper class separation. Cost ~0.25 s per 512px tile, cached per
+image. maxLevel=1 (no pyramid) keeps boundaries pixel-sharp -- the whole
+point of the source.
+
+Bench: bench_wand.py sources, 385 regions in 20 tiles of the NEW dataset:
+
+| source | mean IoU | median | IoU>=0.5 | wins vs spectral | corr |
+|---|---|---|---|---|---|
+| mean-shift | **0.641** | 0.647 | **70.1%** | 206/385 | 0.888 |
+| spectral | 0.617 | 0.644 | 65.2% | — | — |
+| sam | 0.478 | 0.460 | 46.0% | 80/385 | 0.705 |
+| embed | 0.476 | 0.445 | 46.2% | 107/385 | 0.637 |
+
+Mean-shift is the BEST source on this dataset at every aggregation -- and
+note the whole table moved vs the morning's embed bench (spectral 0.543 ->
+0.617, embed 0.507 -> 0.476): that bench ran on the OLD dataset's 470
+regions; these are the new dataset's 385. Spectral stays the default by
+decision; mean-shift is one click away and measurably stronger here.
+
+Mean-shift tolerance curve: peak 0.08 (IoU 0.432), band within 10% of
+peak 0.05..0.10, collapses past ~0.15 (fills jump the sharpened boundary).
+-> MS_TOL_FLOOR 0.02, MS_TOL_CEIL 0.14, slider 50 = 0.08. Same
+"narrow band on purpose" reading as embed: a sharp field compresses the
+useful tolerances, and the slider now spans exactly that.
+
+Design notes:
+
+- Field is RMS (spectral units), NOT cosine: the win is colour collapse,
+  and RMS on collapsed colours is the sharpest cheap measure. No centring
+  or unit-norm -- those serve cosine fields only.
+- PCA per image, not per dataset: a tile is what the user wands at, and
+  its own statistics are the honest reference. Eigen-axes from valid
+  pixels only, so nodata borders cannot tilt them.
+- cv2 demands exactly 3 uint8 channels: 1-2 band projects get the last
+  component repeated (RMS weights repeats like distinct channels).
+- No new dependency: opencv-python-headless was already in for polygons.
+- Availability is unconditional (cv2 is a hard dependency), so the UI
+  button never greys out -- unlike sam/embed.
+- test_meanshift is pure property tests on synthetic stacks (convergence,
+  determinism, range, degenerate masks); test_wand adds the invariants
+  over the real project plus a sharpness regression guard: mean-shift's
+  intra/inter ratio on the image's own labels must beat raw spectral by
+  >10%, or the filter has become decoration.
+- Default-band pin: 006.tif interior click selects 8.98% at tol 0.08.
+
 ## 2026-10-09 — Road class removed; dataset swapped to 138 tiles
 
 The training-side taxonomy dropped Road (old id 1) and shifted every id above

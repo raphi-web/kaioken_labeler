@@ -677,7 +677,7 @@ def test_embed_available_reports_the_model_state(scratch_api):
 # a different field, (b) it is sharper -- the whole reason it exists -- and
 # (c) the shared wand machinery still behaves over it.
 
-MS_TOL = 0.10  # provisional until the bench measures the band; see implementation_log
+MS_TOL = 0.08  # the measured bench peak; MS_TOL_DEFAULT=50 maps the slider onto it
 
 
 def _ms_ready(api):
@@ -799,3 +799,41 @@ def test_meanshift_ignores_the_sam_only_level_option(scratch_api):
     r = _ms_select(api, [A], level="nonsense")
     if not r.get("ok"):
         pytest.fail(f"meanshift should ignore the level option, got: {r.get('error')}")
+
+
+@pytest.mark.parametrize("scratch_project", ["006.tif"], indirect=True)
+def test_the_default_meanshift_tolerance_selects_a_region_and_not_the_scene(scratch_api, scratch_project):
+    """The frontend's MS_TOL_DEFAULT=50 maps to 0.08 -- the bench peak.
+
+    Same guard as the SAM and embed defaults: a re-exported filter or a
+    dataset swap that moves the distances fails here instead of shipping a
+    mistuned slider. Pinned to 006.tif, a class-rich tile where the
+    interior click of the largest region selects 8.98% at the default.
+    """
+    api = scratch_api
+    if not _ms_ready(api):
+        return
+    labels = api._labels
+    if labels is None or (labels != 255).sum() == 0:
+        pytest.skip("nothing labeled in this image")
+    best = None
+    for cls in np.unique(labels):
+        if cls == 255:
+            continue
+        comp, count = ndimage.label(labels == cls)
+        if not count:
+            continue
+        sizes = ndimage.sum(np.ones_like(comp), comp, range(1, count + 1))
+        idx = int(np.argmax(sizes))
+        if best is None or sizes[idx] > best[0]:
+            dist = ndimage.distance_transform_edt(comp == (idx + 1))
+            y, x = np.unravel_index(int(dist.argmax()), dist.shape)
+            best = (int(sizes[idx]), int(x), int(y))
+    _, x, y = best
+    n = api._image.height * api._image.width
+    share = 100 * _ms_select(api, [(x, y)], protect=False,
+                             tolerance=0.08)["count"] / n
+    if not 0.05 <= share <= 25:
+        pytest.fail(f"at tolerance 0.08 an interior click selected "
+                    f"{share:.2f}% of the image -- outside the band the "
+                    f"default is meant to sit in")

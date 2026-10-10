@@ -44,6 +44,16 @@ so on a project with any other band count the embed button stays disabled
 with the reason in its tooltip. Without the file, spectral and SAM both keep
 working exactly as before.
 
+The wand's fourth source, `mean-shift`, needs no model at all: it reduces the
+bands to 3 PCA components and runs OpenCV's `pyrMeanShiftFiltering`, which
+collapses each material onto one near-constant colour and sharpens the
+boundary between materials. The wand then measures its usual spectral RMS
+distance — but on the filtered image, so a tolerance that drifts on raw bands
+becomes a cliff here. OpenCV is already a dependency (it turns SAM masks into
+polygons), so this source is always available and its button never greys out.
+Measured on this dataset it is the strongest of the four sources (mean IoU
+0.641 vs spectral 0.617); see `implementation_log.txt`.
+
 ## Projects and classes
 
 A project is a folder of GeoTIFFs plus a `project_config.json` describing the
