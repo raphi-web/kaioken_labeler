@@ -19,7 +19,7 @@
       "SWIR2"
     ],
     "display_bands": [
-      3,
+      0,
       1,
       2
     ],
@@ -70,11 +70,6 @@
       "id": 8,
       "name": "Wetland",
       "color": "#9b5fd0"
-    },
-    {
-      "id": 9,
-      "name": "Synthetic Nodata",
-      "color": "#ff2fd0"
     }
   ],
   "next_class_id": 11,

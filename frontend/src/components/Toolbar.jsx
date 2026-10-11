@@ -4,8 +4,8 @@ import Dropdown from './Dropdown'
 export default function Toolbar({
   tool, setTool, labeledPixels, undoDepth, redoDepth, hasImage,
   onUndo, onRedo, onFit, onClearLabels,
-  hasProject, onNewProject, onNewFromGeotiff, onSaveProject, onSaveUserMask,
-  onOpenSettings, samAvailable,
+  hasProject, onNewProject, onNewFromGeotiff, onAddImage,
+  onSaveProject, onSaveUserMask, onOpenSettings, samAvailable,
 }) {
   // Shared by the slider, the numeric box and the wheel, so all three clamp
   // identically. clampBrush returns null for a blank or non-numeric entry,
@@ -31,6 +31,13 @@ export default function Toolbar({
             title="Cut one large GeoTIFF into tiles and use them as a new project"
           >
             From GeoTIFF…
+          </button>
+          <button
+            disabled={!hasProject}
+            onClick={onAddImage}
+            title="Copy a GeoTIFF into this project's images folder"
+          >
+            Add Image…
           </button>
           <button disabled={!hasProject} onClick={onSaveProject}>Save Project</button>
           <button disabled={!hasProject} onClick={onSaveUserMask}>Save Masks</button>

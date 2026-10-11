@@ -318,23 +318,9 @@ def test_an_under_budget_region_is_not_reported_as_capped(scratch_api):
         pytest.fail("a region smaller than the budget was reported as capped")
 
 
-# ---------- the SAM2 embedding source ----------
-#
-# Wand-SAM keeps every invariant above and changes only what distance means, so
-# what these check is that the substitution really is that clean: the same
-# additivity, the same option handling, and a field that is a cosine distance
-# at pixel resolution rather than a resized approximation of one.
+# ---------- shared field helper ----------
 
-# A cosine distance against the image's mean feature, not an RMS band
-# difference -- see Api._sam_features and LabelerPane's SAM_TOL_*. These are
-# the UI's defaults: the fine level, which is the one that produces usable
-# selections on Sentinel-2, at the tolerance where a click takes a region
-# rather than a speck or the whole scene.
-SAM_TOL = 0.8
-SAM_LEVEL = "fine"
-
-
-def _field(api, point, source, level=SAM_LEVEL, size=9):
+def _field(api, point, source, size=9):
     """One sample's raw distance field, straight from the Wand.
 
     Goes through the algorithm rather than the bridge because these checks are
@@ -342,333 +328,28 @@ def _field(api, point, source, level=SAM_LEVEL, size=9):
     Api.wand_select would have called; it is cheap and idempotent.
     """
     from wand import parse_options
-    api._wand.set_image(api._image, api._sam_image_key(), api._display_bands())
-    options = parse_options({"tolerance": SAM_TOL, "sample_size": size,
-                             "source": source, "level": level})
+    api._wand.set_image(api._image, api._wand_image_key())
+    options = parse_options({"tolerance": 0.25, "sample_size": size,
+                             "source": source})
     return api._wand.fields([point], options)[0]
 
 
-def _sam_ready(api):
-    """Whether the encoder can actually run here; these tests skip if not."""
-    reason = api._sam.unavailable_reason()
-    if reason is not None:
-        pytest.skip(f"SAM2 unavailable: {reason}")
-    return True
+def test_removed_sources_are_rejected_cleanly(scratch_api):
+    """The sources this wand no longer has must say so, not fall through.
 
-
-def _sam_select(api, samples, **options):
-    opts = {"source": "sam", "level": SAM_LEVEL, "tolerance": SAM_TOL,
-            "sample_size": 9}
-    opts.update(options)
-    return api.wand_select([[x, y] for x, y in samples], opts)
-
-
-def test_sam_source_is_rejected_cleanly_when_misconfigured(scratch_api):
-    """A bad source or level is a message, not a traceback across the bridge."""
-    api = scratch_api
-    for opts, why in (({"tolerance": SAM_TOL, "source": "nonsense"}, "bad source"),
-                      ({"tolerance": SAM_TOL, "source": "sam",
-                        "level": "nonsense"}, "bad level")):
-        r = api.wand_select([[10, 10]], opts)
-        if r.get("ok") or not r.get("error"):
-            pytest.fail(f"{why} should return an error, got {r}")
-
-
-def test_the_embedding_field_is_a_cosine_distance_at_pixel_resolution(scratch_api):
-    """Bounded in [0, 2], and the size of the image.
-
-    The field is computed on the encoder's own grid and upsampled, so its
-    shape is the one thing that could silently drift from the label buffer --
-    everything downstream indexes both with the same flat offsets.
-
-    Deliberately no assertion that the click sits at distance zero. It does on
-    the feature grid, by construction, but the field is read at pixel
-    resolution: a bilinear upsample blends the reference cell with neighbours
-    that may be far away, so the exact zero survives nowhere. Measured at
-    0.09 (fine) to 0.44 (deep) at the click itself. The wand does not depend on
-    it either -- wand_select seeds `within[y, x] = True` so that a click is
-    never a no-op regardless of its own distance.
+    "sam" and "embed" were real sources once; a stale frontend, a saved
+    preset, or a hand-written request naming one must get the same
+    {ok: false, error} as any other unknown source rather than silently
+    selecting on spectral and lying about which measure produced the mask.
     """
     api = scratch_api
-    if not _sam_ready(api):
-        return
-    for level in ("fine", "mid", "deep"):
-        _, field = _field(api, A, "sam", level)
-        if field.shape != (api._image.height, api._image.width):
-            pytest.fail(f"{level}: field is {field.shape}, image is "
-                        f"{(api._image.height, api._image.width)}")
-        if not np.isfinite(field).all():
-            pytest.fail(f"{level}: field has non-finite values")
-        if field.min() < -1e-5 or field.max() > 2 + 1e-5:
-            pytest.fail(f"{level}: cosine distance out of [0, 2]: "
-                        f"{field.min()}..{field.max()}")
+    for source in ("sam", "embed", "nonsense"):
+        r = api.wand_select([[10, 10]], {"tolerance": 0.2, "source": source})
+        if r.get("ok"):
+            pytest.fail(f"source {source!r} should be rejected, got ok")
+        if not r.get("error"):
+            pytest.fail(f"source {source!r} was rejected without a message")
 
-
-@pytest.mark.parametrize("scratch_project", ["003.tif"], indirect=True)
-def test_the_default_tolerance_selects_a_region_and_not_the_scene(scratch_api, scratch_project):
-    """The UI's default lands in the band where the level is usable at all.
-
-    The band is narrow and does not start at zero -- at the default level a
-    click takes under 0.15% of the image below 0.7 and over 7% by 1.0 -- so a
-    default outside it makes the tool look broken rather than mistuned. This
-    fails if a re-exported encoder moves the distances, which is the point:
-    the number in LabelerPane would then need re-sighting.
-
-    Pinned to 003.tif, a tile where all three of A/B/C land inside the band at
-    the default (measured 0.98% / 4.22% / 5.56%). Deliberately generous bounds:
-    this pins "the default is inside the useful band", not a particular
-    selection size, which varies by what was clicked.
-    """
-    api = scratch_api
-    if not _sam_ready(api):
-        return
-    n = api._image.height * api._image.width
-    for point in (A, B, C):
-        share = 100 * _sam_select(api, [point], protect=False)["count"] / n
-        if not 0.05 <= share <= 25:
-            pytest.fail(f"at tolerance {SAM_TOL} a click at {point} selected "
-                        f"{share:.2f}% of the image — outside the band the "
-                        f"default is meant to sit in")
-
-
-def test_the_two_sources_measure_different_things(scratch_api):
-    """Guards against the embedding source quietly falling back to spectral.
-
-    Compares the fields rather than the masks: two different measures can
-    happen to select the same region at some tolerance, but they cannot
-    produce the same distance at every pixel.
-    """
-    api = scratch_api
-    if not _sam_ready(api):
-        return
-    _, spectral = _field(api, A, "image")
-    _, embedding = _field(api, A, "sam")
-    if np.allclose(spectral, embedding):
-        pytest.fail("the embedding field is identical to the spectral one")
-
-
-def test_adding_a_sample_never_removes_a_pixel_on_embeddings(scratch_api):
-    """The wand's central property, on the other source."""
-    api = scratch_api
-    if not _sam_ready(api):
-        return
-    one = _mask(_sam_select(api, [A], protect=False))
-    two = _mask(_sam_select(api, [A, B], protect=False))
-    lost = int((one & ~two).sum())
-    if lost:
-        pytest.fail(f"a second sample dropped {lost} px the first had selected")
-
-
-def test_the_embedding_selection_is_deterministic_and_respects_the_budget(scratch_api):
-    """Same clicks, same mask -- and the cap still bites the same way."""
-    api = scratch_api
-    if not _sam_ready(api):
-        return
-    first = _mask(_sam_select(api, [A], protect=False))
-    again = _mask(_sam_select(api, [A], protect=False))
-    if not np.array_equal(first, again):
-        pytest.fail("two identical embedding selections disagree")
-    capped = _sam_select(api, [A], protect=False, max_pixels=BUDGET)
-    if capped["count"] > BUDGET:
-        pytest.fail(f"budget ignored on embeddings: {capped['count']} > {BUDGET}")
-    # Connectivity still applies: every selected pixel is reachable from
-    # the click, exactly as with the spectral source.
-    pieces = ndimage.label(_mask(capped), structure=_WAND_CONNECTIVITY)[1]
-    if pieces > 1:
-        pytest.fail(f"a connected embedding selection came back in {pieces} pieces")
-# ---------- the auto-encoder embedding source ----------
-#
-# Same substitution test as the SAM section: every invariant above must hold
-# unchanged when distance means "8-dim land-cover embedding" instead of bands
-# or SAM2 features. Two things are genuinely new. The embed stack is at pixel
-# resolution, so the click's own distance survives -- there is no upsample to
-# blur it -- and the source must ignore the SAM-only level option rather than
-# rejecting it.
-
-# Provisional: the usable band is measured by bench_wand.py (sources mode)
-# before the frontend default is set; these tests score fields and invariants,
-# which do not depend on where the band sits.
-EMBED_TOL = 0.2
-
-
-def _embed_ready(api):
-    """Whether the embedding encoder can run here; these tests skip if not."""
-    reason = api._embed.unavailable_reason()
-    if reason is not None:
-        pytest.skip(f"embed unavailable: {reason}")
-    if api._image.bands != 10:
-        pytest.skip("embed needs a 10-band stack")
-    return True
-
-
-def _embed_select(api, samples, **options):
-    opts = {"source": "embed", "tolerance": EMBED_TOL, "sample_size": 9}
-    opts.update(options)
-    return api.wand_select([[x, y] for x, y in samples], opts)
-
-
-def test_embed_ignores_the_sam_only_level_option(scratch_api):
-    """A level travels with every request; only "sam" gets to reject a bad one."""
-    api = scratch_api
-    if not _embed_ready(api):
-        return
-    r = _embed_select(api, [A], level="nonsense")
-    if not r.get("ok"):
-        pytest.fail(f"embed should ignore the level option, got: {r.get('error')}")
-
-
-def test_the_embed_field_is_a_cosine_distance_at_pixel_resolution(scratch_api):
-    api = scratch_api
-    if not _embed_ready(api):
-        return
-    _, field = _field(api, A, "embed")
-    if field.shape != (api._image.height, api._image.width):
-        pytest.fail(f"field is {field.shape}, image is "
-                    f"{(api._image.height, api._image.width)}")
-    if not np.isfinite(field).all():
-        pytest.fail("field has non-finite values")
-    if field.min() < -1e-5 or field.max() > 2 + 1e-5:
-        pytest.fail(f"cosine distance out of [0, 2]: {field.min()}..{field.max()}")
-
-
-def test_the_embed_field_is_exact_at_the_click(scratch_api):
-    """Pixel-resolution grid: unlike SAM, nothing upsamples the zero away.
-
-    sample_size=1 makes the reference the clicked pixel's own vector, so its
-    distance is exactly 0 by construction. This is the property that lets an
-    embed selection hug boundaries the SAM field's half-pixel blur cannot.
-    """
-    api = scratch_api
-    if not _embed_ready(api):
-        return
-    _, field = _field(api, A, "embed", size=1)
-    if field[A[1], A[0]] > 1e-4:
-        pytest.fail(f"click not at distance ~0 on the embed grid: "
-                    f"{field[A[1], A[0]]}")
-
-
-def test_embed_measures_something_of_its_own(scratch_api):
-    """Guards against the new source quietly aliasing an existing one."""
-    api = scratch_api
-    if not _embed_ready(api):
-        return
-    _, spectral = _field(api, A, "image")
-    _, embed = _field(api, A, "embed")
-    if np.allclose(spectral, embed):
-        pytest.fail("the embed field is identical to the spectral one")
-    if api._sam.unavailable_reason() is None:
-        _, sam = _field(api, A, "sam")
-        if np.allclose(sam, embed):
-            pytest.fail("the embed field is identical to the SAM one")
-
-
-def test_adding_a_sample_never_removes_a_pixel_on_embed(scratch_api):
-    """The wand's central property, on the third source."""
-    api = scratch_api
-    if not _embed_ready(api):
-        return
-    one = _mask(_embed_select(api, [A], protect=False))
-    two = _mask(_embed_select(api, [A, B], protect=False))
-    lost = int((one & ~two).sum())
-    if lost:
-        pytest.fail(f"a second embed sample dropped {lost} px the first had selected")
-
-
-def test_embed_selection_is_deterministic_and_respects_the_budget(scratch_api):
-    api = scratch_api
-    if not _embed_ready(api):
-        return
-    first = _mask(_embed_select(api, [A], protect=False))
-    again = _mask(_embed_select(api, [A], protect=False))
-    if not np.array_equal(first, again):
-        pytest.fail("two identical embed selections disagree")
-    capped = _embed_select(api, [A], protect=False, max_pixels=BUDGET)
-    if capped["count"] > BUDGET:
-        pytest.fail(f"budget ignored on embed: {capped['count']} > {BUDGET}")
-    pieces = ndimage.label(_mask(capped), structure=_WAND_CONNECTIVITY)[1]
-    if pieces > 1:
-        pytest.fail(f"a connected embed selection came back in {pieces} pieces")
-
-
-@pytest.mark.parametrize("scratch_project", ["026.tif"], indirect=True)
-def test_the_default_embed_tolerance_selects_a_region_and_not_the_scene(scratch_api, scratch_project):
-    """The frontend's EMBED_TOL_DEFAULT=50 maps to 0.08 -- the bench peak.
-
-    Same shape as the SAM default test: pins "the shipped default lands in
-    the band where the source is usable" (measured over 470 regions: peak
-    0.328 mean IoU at 0.08, band 0.04..0.12), so a re-exported encoder that
-    moves the distances fails here instead of shipping a mistuned slider.
-
-    The click is the most interior pixel of the image's largest labeled
-    region -- bench_wand.py's own methodology. An arbitrary point can land
-    on a boundary or inside a tiny field parcel, where a tight and entirely
-    correct selection fails a share band that would then say nothing. Pinned
-    to 026.tif, a class-rich tile where that interior click selects 7.41% at
-    the default.
-    """
-    api = scratch_api
-    if not _embed_ready(api):
-        return
-    labels = api._labels
-    if labels is None or (labels != 255).sum() == 0:
-        pytest.skip("nothing labeled in this image")
-    best = None
-    for cls in np.unique(labels):
-        if cls == 255:
-            continue
-        comp, count = ndimage.label(labels == cls)
-        if not count:
-            continue
-        sizes = ndimage.sum(np.ones_like(comp), comp, range(1, count + 1))
-        idx = int(np.argmax(sizes))
-        if best is None or sizes[idx] > best[0]:
-            dist = ndimage.distance_transform_edt(comp == (idx + 1))
-            y, x = np.unravel_index(int(dist.argmax()), dist.shape)
-            best = (int(sizes[idx]), int(x), int(y))
-    _, x, y = best
-    n = api._image.height * api._image.width
-    share = 100 * _embed_select(api, [(x, y)], protect=False,
-                                tolerance=0.08)["count"] / n
-    if not 0.05 <= share <= 25:
-        pytest.fail(f"at tolerance 0.08 an interior click selected "
-                    f"{share:.2f}% of the image -- outside the band the "
-                    f"default is meant to sit in")
-
-
-def test_embed_protect_and_global_compose(scratch_api):
-    api = scratch_api
-    if not _embed_ready(api):
-        return
-    labels = api._labels
-    r = _embed_select(api, [A], protect=True, max_pixels=5000, **{"global": True})
-    if not r.get("ok"):
-        pytest.fail(f"embed + protect + global rejected: {r.get('error')}")
-    m = _mask(r)
-    if labels is not None and (m & (labels != 255)).any():
-        pytest.fail("protect stopped applying on the embed source")
-    if r["count"] > 5000:
-        pytest.fail("the budget stopped applying on the embed source")
-
-
-def test_embed_select_fails_as_a_message_not_a_traceback(scratch_api, monkeypatch):
-    """A missing model must reach the frontend as {ok: false, error: ...}."""
-    api = scratch_api
-    monkeypatch.setattr(api._embed, "unavailable_reason",
-                        lambda: "embedding model missing (embedding.onnx)")
-    r = api.wand_select([[10, 10]], {"tolerance": EMBED_TOL, "source": "embed"})
-    if r.get("ok") or "missing" not in r.get("error", ""):
-        pytest.fail(f"expected a clean 'missing' error, got {r}")
-
-
-def test_embed_available_reports_the_model_state(scratch_api):
-    api = scratch_api
-    r = api.embed_available()
-    reason = api._embed.unavailable_reason()
-    bands = api._image.bands if api._image is not None else None
-    expected = reason is None and bands == 10
-    if r["available"] != expected:
-        pytest.fail(f"embed_available says {r}, expected available={expected} "
-                    f"(reason={reason}, bands={bands})")
 
 # ---------- the mean-shift source ----------
 #
@@ -703,7 +384,7 @@ def test_the_meanshift_field_is_rms_at_pixel_resolution(scratch_api):
     if not np.isfinite(field).all():
         pytest.fail("field has non-finite values")
     # RMS of 3 components in [0,1]: bounded by 1, and exact-zero at the click
-    # with a one-pixel sample (pixel resolution, like embed, unlike SAM).
+    # with a one-pixel sample (the filtered image is pixel resolution).
     if field.min() < -1e-6 or field.max() > 1 + 1e-6:
         pytest.fail(f"RMS distance out of [0, 1]: {field.min()}..{field.max()}")
     if field[A[1], A[0]] > 1e-5:
@@ -792,7 +473,8 @@ def test_meanshift_selection_is_deterministic_and_respects_the_budget(scratch_ap
         pytest.fail(f"budget ignored on mean-shift: {capped['count']} > {BUDGET}")
 
 
-def test_meanshift_ignores_the_sam_only_level_option(scratch_api):
+def test_meanshift_ignores_an_unknown_level_option(scratch_api):
+    """A stale "level" key (the removed SAM source's knob) must not break a request."""
     api = scratch_api
     if not _ms_ready(api):
         return
@@ -805,10 +487,10 @@ def test_meanshift_ignores_the_sam_only_level_option(scratch_api):
 def test_the_default_meanshift_tolerance_selects_a_region_and_not_the_scene(scratch_api, scratch_project):
     """The frontend's MS_TOL_DEFAULT=50 maps to 0.08 -- the bench peak.
 
-    Same guard as the SAM and embed defaults: a re-exported filter or a
-    dataset swap that moves the distances fails here instead of shipping a
-    mistuned slider. Pinned to 006.tif, a class-rich tile where the
-    interior click of the largest region selects 8.98% at the default.
+    A re-exported filter or a dataset swap that moves the distances fails here
+    instead of shipping a mistuned slider. Pinned to 006.tif, a class-rich tile
+    where the interior click of the largest region selects 8.98% at the
+    default.
     """
     api = scratch_api
     if not _ms_ready(api):

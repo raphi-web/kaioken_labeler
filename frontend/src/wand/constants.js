@@ -93,62 +93,19 @@ export function tolSeedKey(name) {
   return String(name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
-// With the SAM-features switch on, the wand measures a cosine distance between
-// mean-centred SAM2 feature vectors (see Api._sam_features), which has nothing
-// to do with an RMS band difference -- so the slider stays 1..100 and maps onto
-// its own range.
-//
-// Not a bare divide, because the useful distances do not start at zero. On a
-// 512px Sentinel-2 tile at the fine level, three clicks each selected under
-// 0.15% of the image below 0.7, 0.6-2.3% at 0.8, and 7-30% by 1.0: a region
-// at 0.7-0.95, a speck below, the scene above. Mapping the slider onto
-// [0.4, 1.2] puts that band across the middle of the travel and still leaves
-// the deep level's lower band (0.5-0.8) inside it. A plain /100 left the whole
-// working range pinned to the right-hand fifth of the slider.
-export const SAM_TOL_FLOOR = 0.4
-export const SAM_TOL_CEIL = 1.2
-export const SAM_TOL_DEFAULT = 50 // = 0.8, mid-band for the fine level
-
-export function samTolerance(slider) {
-  return SAM_TOL_FLOOR + (slider / WAND_TOL_MAX) * (SAM_TOL_CEIL - SAM_TOL_FLOOR)
-}
-
-// With the embedding source on, the wand measures a cosine distance between
-// mean-centred 8-dim land-cover embeddings from auto_encoder/embedding.onnx
-// (see backend/wand.py embed_features and auto_encoder/ONNX.md). Same
-// construction as SAM's band: the slider spans the measured useful range.
-//
-// Measured by bench_wand.py sources over 470 labeled regions in 20 images
-// (see implementation_log.txt): the mean-IoU curve peaks at 0.08, the
-// within-10%-of-peak band spans 0.04..0.12, and IoU decays slowly past it
-// (0.253 at 0.20) as fills merge neighbouring regions of the same class.
-// The floor sits just under the band so the left of the slider still
-// narrows, and the ceiling just past it so slider 50 lands on the peak
-// rather than above it -- the same "default belongs on the low side" policy
-// the spectral tolerance follows, since an additive wand punishes
-// over-selection harder than under-selection.
-export const EMBED_TOL_FLOOR = 0.02
-export const EMBED_TOL_CEIL = 0.14
-export const EMBED_TOL_DEFAULT = 50 // = 0.08, the measured peak
-
-export function embedTolerance(slider) {
-  return EMBED_TOL_FLOOR + (slider / WAND_TOL_MAX) * (EMBED_TOL_CEIL - EMBED_TOL_FLOOR)
-}
-
-// The mean-shift source measures the SAME thing as spectral -- an RMS colour
-// distance in [0,1] -- but on the mean-shift-filtered PCA image, where each
-// material has already collapsed onto one near-constant colour. The usable
-// band therefore sits at different numbers than spectral's, and gets its own
-// mapping.
+// With the mean-shift source on, the wand measures the SAME thing as spectral
+// -- an RMS colour distance in [0,1] -- but on the mean-shift-filtered PCA
+// image, where each material has already collapsed onto one near-constant
+// colour. The usable band therefore sits at different numbers than spectral's,
+// and gets its own mapping.
 //
 // Measured by bench_wand.py sources over 385 labeled regions in 20 images
-// (see implementation_log.txt): the mean-IoU curve peaks at 0.08 (0.432,
-// the best of all four sources), the within-10%-of-peak band spans
-// 0.05..0.10, and IoU collapses past 0.15 as fills jump the sharpened
-// boundaries into the next material. Same construction as embed's band:
-// floor just under, ceiling just over, slider 50 = the peak. The narrow band
-// is the point -- a sharp field means the useful tolerances are CLOSE
-// together, which is what "finer tolerance" asks of a slider.
+// (see implementation_log.txt): the mean-IoU curve peaks at 0.08 (0.432),
+// the within-10%-of-peak band spans 0.05..0.10, and IoU collapses past 0.15
+// as fills jump the sharpened boundaries into the next material. Floor just
+// under the band, ceiling just over, slider 50 = the peak. The narrow band is
+// the point -- a sharp field means the useful tolerances are CLOSE together,
+// which is what "finer tolerance" asks of a slider.
 export const MS_TOL_FLOOR = 0.02
 export const MS_TOL_CEIL = 0.14
 export const MS_TOL_DEFAULT = 50 // = 0.08, the measured peak
@@ -157,54 +114,14 @@ export function msTolerance(slider) {
   return MS_TOL_FLOOR + (slider / WAND_TOL_MAX) * (MS_TOL_CEIL - MS_TOL_FLOOR)
 }
 
-// The tolerance a slider position means, in the units of `source`. The three
-// distance measures (RMS band difference, SAM cosine, embed cosine) share
-// nothing but the 1..100 slider, so each maps through its own curve.
+// The tolerance a slider position means, in the units of `source`. Spectral
+// divides the 1..100 slider straight by WAND_TOL_SCALE; mean-shift maps onto
+// its own measured band. Each source gets its own curve because the two share
+// nothing but the slider.
 export function toleranceFor(source, slider) {
-  if (source === 'sam') return samTolerance(slider)
-  if (source === 'embed') return embedTolerance(slider)
   if (source === 'meanshift') return msTolerance(slider)
   return slider / WAND_TOL_SCALE
 }
-
-// Which encoder feature map to match on (see sam_service.FEATURE_LEVELS). The
-// grid sizes are for the encoder's fixed 1024² input frame, so on a 512px tile
-// "fine" is one cell per 2x2 pixels and "deep" one per 8x8.
-//
-// "fine" is the default: on Sentinel-2 it is the only level that produces
-// selections worth committing, established by labeling with it rather than by
-// measurement.
-//
-// It is worth recording that the obvious measurement says the opposite, and
-// why it is the wrong measurement. Region growing needs a click's neighbours
-// to resemble it, and by that test fine looks hopeless -- the median distance
-// within 10 px of a click is 1.10 against a whole-image median of 1.02, so the
-// ground beside a click is as unlike it as the far side of the scene, while at
-// deep the same numbers are 0.41 against 0.98. But growing smoothly is not the
-// same as landing on the thing you meant: one deep cell covers 8x8 px, which
-// at 10 m per pixel is 80 m of ground, so its selections are the right shape
-// at the wrong scale -- and Sentinel-2 classes are often a few pixels across.
-// Fine grows grudgingly and needs most of the tolerance range, but its
-// boundaries are where the material actually changes.
-//
-// The likely reason is that SAM2 learned its semantics on photographs, where a
-// deep feature covers one object; a 10 m/px tile has nothing at that scale, so
-// only the low-level texture features carry usable signal. If so, the ordering
-// should flip on higher-resolution imagery -- which is exactly why all three
-// levels stay selectable instead of the loser being deleted.
-export const SAM_LEVELS = [
-  { id: 'fine', label: 'fine',
-    title: 'high_res_feat0 — 32 channels at 256². Texture-level features and '
-      + 'the sharpest boundaries. The one that works on Sentinel-2; needs a '
-      + 'high tolerance (around 0.8) before it selects a region at all' },
-  { id: 'mid', label: 'mid',
-    title: 'high_res_feat1 — 64 channels at 128², between the two' },
-  { id: 'deep', label: 'deep',
-    title: 'image_embed — 256 channels at 64², what the SAM2 decoder segments '
-      + 'from. Grows the most smoothly with the tolerance, but one cell is '
-      + '8x8 px — too coarse for Sentinel-2 boundaries. Worth retrying on '
-      + 'higher-resolution imagery' },
-]
 
 // Optional budget on how many pixels the wand may select. The slider runs
 // left (tight) to right (loose) and its maximum means "no limit", so sliding

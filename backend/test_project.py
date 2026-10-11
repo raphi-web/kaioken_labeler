@@ -9,13 +9,17 @@ Everything that touches labels runs against a scratch copy of the project via
 the `scratch_api` fixture in backend/conftest.py, never label_raster/.
 """
 
+import os
+import tempfile
+
 import numpy as np
 import pytest
+import rasterio
 
 from data import UNLABELED, read_label_mask
-from project import (CLASS_PRESETS, DEFAULT_PRESET, classes_from_settings,
-                     config_from_settings, default_config, preset_classes,
-                     validate_config)
+from project import (CLASS_PRESETS, DEFAULT_PRESET, IMAGE_EXTENSIONS,
+                     classes_from_settings, config_from_settings,
+                     default_config, preset_classes, validate_config)
 
 BASE = {"input_channels": 4, "input_patch_size": 96}
 
@@ -268,3 +272,170 @@ def test_clear_image_labels_on_a_non_active_image_writes_only_the_mask(scratch_a
     name = api._image_name
     if counts.get(name, {}).get("labeled", -1) != 0:
         pytest.fail("label stats drifted after a clear + re-read")
+
+
+# ---------- add_image: extending the project with a new on-disk image ----------
+
+def _write_geotiff(path, width, height, bands, dtype="uint8"):
+    """Write a tiny in-memory stack to `path` so we can seed an add_image call.
+
+    Kept here rather than in conftest because nothing else needs it; the
+    contract under test is the bridge method, not the writer.
+    """
+    profile = {"driver": "GTiff", "height": height, "width": width, "count": bands,
+               "dtype": dtype, "compress": "deflate"}
+    if dtype == "float32":
+        data = np.zeros((bands, height, width), dtype=np.float32)
+    else:
+        data = np.zeros((bands, height, width), dtype=np.uint8)
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(data)
+
+
+def test_add_image_copies_a_matching_new_image_into_the_project(scratch_api):
+    """Happy path: same shape as the existing image, no warning, no overwrite."""
+    api = scratch_api
+    project = api._project
+    if project is None:
+        pytest.skip("no project opened")
+    if api._image is None:
+        pytest.skip("no image loaded")
+    with tempfile.TemporaryDirectory() as tmp:
+        source = os.path.join(tmp, "fresh.tif")
+        _write_geotiff(source, api._image.width, api._image.height, project.input_channels)
+        before = project.list_images()
+        result = api.add_image(source)
+        if not result.get("ok"):
+            pytest.fail(f"add_image failed: {result.get('error')}")
+        if result.get("requires_confirm"):
+            pytest.fail("a matching image should not ask for confirmation")
+        after = project.list_images()
+        if "fresh.tif" not in after:
+            pytest.fail(f"new image not in project list: {after}")
+        if len(after) != len(before) + 1:
+            pytest.fail(f"image count: was {len(before)}, now {len(after)}")
+        # The file is on disk under the project's images folder.
+        if not os.path.exists(project.image_path("fresh.tif")):
+            pytest.fail("the new image was not copied into the project")
+        # The source remains where it was — copy, not move.
+        if not os.path.exists(source):
+            pytest.fail("add_image moved the source; it should have copied it")
+
+
+def test_add_image_refuses_to_overwrite_an_image_with_the_same_name(scratch_api):
+    """The source filename is the destination filename. Clashes are rejected."""
+    api = scratch_api
+    project = api._project
+    if project is None or api._image is None:
+        pytest.skip("no project")
+    existing = api._image_name
+    with tempfile.TemporaryDirectory() as tmp:
+        source = os.path.join(tmp, existing)
+        _write_geotiff(source, api._image.width, api._image.height, project.input_channels)
+        result = api.add_image(source)
+        if result.get("ok"):
+            pytest.fail("a same-name add should not succeed")
+        if "already exists" not in (result.get("error") or ""):
+            pytest.fail(f"expected an 'already exists' error, got {result}")
+
+
+def test_add_image_with_a_band_count_mismatch_is_rejected(scratch_api):
+    """A project has a fixed band count; an image with the wrong shape is invalid."""
+    api = scratch_api
+    project = api._project
+    if project is None or api._image is None:
+        pytest.skip("no project")
+    with tempfile.TemporaryDirectory() as tmp:
+        source = os.path.join(tmp, "wrong_bands.tif")
+        wrong_bands = 3 if project.input_channels != 3 else 5
+        _write_geotiff(source, api._image.width, api._image.height, wrong_bands)
+        result = api.add_image(source)
+        if result.get("ok"):
+            pytest.fail("a band-count mismatch should not succeed")
+        if result.get("requires_confirm"):
+            pytest.fail("band-count mismatches must be rejected outright, not "
+                        "deferred to a confirmation dialog")
+
+
+def test_add_image_with_a_different_size_asks_for_confirmation(scratch_api):
+    """The whole point of the feature: a different grid needs an explicit yes."""
+    api = scratch_api
+    project = api._project
+    if project is None or api._image is None:
+        pytest.skip("no project")
+    with tempfile.TemporaryDirectory() as tmp:
+        source = os.path.join(tmp, "different.tif")
+        # Different size, same band count — the only mismatch the dialog covers.
+        _write_geotiff(source, api._image.width + 8, api._image.height + 8,
+                        project.input_channels)
+        result = api.add_image(source)
+        if result.get("ok"):
+            pytest.fail("a size mismatch should not silently succeed")
+        if not result.get("requires_confirm"):
+            pytest.fail(f"expected requires_confirm, got {result}")
+        existing = result.get("existing", {})
+        candidate = result.get("candidate", {})
+        if (existing.get("width"), existing.get("height")) != (api._image.width,
+                                                               api._image.height):
+            pytest.fail(f"existing dims wrong: {existing}")
+        if (candidate.get("width"), candidate.get("height")) != (api._image.width + 8,
+                                                                  api._image.height + 8):
+            pytest.fail(f"candidate dims wrong: {candidate}")
+        if "different.tif" in project.list_images():
+            pytest.fail("the candidate must not appear in the project until confirmed")
+
+
+def test_add_image_with_force_skips_the_size_check(scratch_api):
+    """The user-confirmed branch: copy regardless of the size mismatch."""
+    api = scratch_api
+    project = api._project
+    if project is None or api._image is None:
+        pytest.skip("no project")
+    with tempfile.TemporaryDirectory() as tmp:
+        source = os.path.join(tmp, "different.tif")
+        _write_geotiff(source, api._image.width + 8, api._image.height + 8,
+                        project.input_channels)
+        result = api.add_image(source, force=True)
+        if not result.get("ok"):
+            pytest.fail(f"add_image with force=True failed: {result.get('error')}")
+        if "different.tif" not in project.list_images():
+            pytest.fail("forced add did not add the image")
+        if not os.path.exists(project.image_path("different.tif")):
+            pytest.fail("forced add did not copy the file into the project")
+
+
+def test_add_image_on_a_project_with_no_images_works_without_confirmation(scratch_api):
+    """The dialog is meaningless when the project has no images to compare to."""
+    api = scratch_api
+    project = api._project
+    if project is None:
+        pytest.skip("no project")
+    # Emulate the empty-project case by emptying the images folder so the
+    # next list_images() returns nothing. Record the originals' shape first
+    # so we can round-trip them back through the writer in the finally block.
+    images_dir = project.images_dir
+    kept = []
+    for name in os.listdir(images_dir):
+        if name.lower().endswith(IMAGE_EXTENSIONS):
+            path = os.path.join(images_dir, name)
+            with rasterio.open(path) as src:
+                kept.append((path, src.width, src.height, src.count))
+            os.remove(path)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "first.tif")
+            _write_geotiff(source, 16, 16, project.input_channels)
+            result = api.add_image(source)
+            if not result.get("ok"):
+                pytest.fail(f"first-image add failed: {result.get('error')}")
+            if result.get("requires_confirm"):
+                pytest.fail("an empty project should not ask for confirmation")
+            if "first.tif" not in project.list_images():
+                pytest.fail("the first image did not land in the project")
+    finally:
+        # Put the originals back so the fixture's cleanup (which only knows
+        # about the project root) doesn't see an empty images folder.
+        for path, w, h, b in kept:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            _write_geotiff(path, w, h, b)
+        api._init_project(project.root)

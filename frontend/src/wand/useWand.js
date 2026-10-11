@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  EMBED_TOL_DEFAULT, MS_TOL_DEFAULT, SAM_TOL_DEFAULT, WAND_BUDGET_MAX,
-  WAND_BUDGET_MIN, WAND_SAMPLE_DEFAULT, WAND_SAMPLE_MAX, WAND_SAMPLE_MIN,
-  WAND_TOL_DEFAULT, WAND_TOL_MAX, WAND_TOL_MIN, WAND_TOL_SEEDS, tolSeedKey,
-  toleranceFor, wandBudget,
+  MS_TOL_DEFAULT, WAND_BUDGET_MAX, WAND_BUDGET_MIN, WAND_SAMPLE_DEFAULT,
+  WAND_SAMPLE_MAX, WAND_SAMPLE_MIN, WAND_TOL_DEFAULT, WAND_TOL_MAX,
+  WAND_TOL_MIN, WAND_TOL_SEEDS, tolSeedKey, toleranceFor, wandBudget,
 } from './constants'
 import { drawWandPreview } from './preview'
 
@@ -13,11 +12,9 @@ import { drawWandPreview } from './preview'
 // The settings are ONE object edited through patch(), rather than a state
 // variable per knob. The previous shape threaded six positional arguments into
 // a re-run function from eleven call sites, ten of which differed by exactly
-// one argument -- so every new knob meant editing eleven lines, and two of
-// them (the SAM source and the feature level) ended up smuggled through refs
-// purely to avoid an eighth positional argument. patch({ protect: true }) is
-// the whole of that now, and re-running is the hook's business rather than
-// each caller's.
+// one argument -- so every new knob meant editing eleven lines. patch({
+// protect: true }) is the whole of that now, and re-running is the hook's
+// business rather than each caller's.
 //
 // The settings live in a ref as well as in state: the ref is the truth that
 // callbacks read, state is only what renders. That is what lets every callback
@@ -32,20 +29,16 @@ const INITIAL = {
   // material" is a property of the material, and the per-class optima span
   // 0.07 to 0.19.
   tolerances: {},
-  // What the wand measures distance in: 'image' (spectral), 'sam' (SAM2
-  // encoder features), 'embed' (auto-encoder land-cover embeddings) or
-  // 'meanshift' (spectral on a mean-shift-filtered PCA image). One string
-  // rather than a bool per source, so a fifth source is an array entry and
-  // not another flag nobody can keep exclusive.
+  // What the wand measures distance in: 'image' (spectral) or 'meanshift'
+  // (spectral on a mean-shift-filtered PCA image). One string rather than a
+  // bool, so a third source is an array entry and not another flag nobody can
+  // keep exclusive.
   source: 'image',
-  // The embedding sources keep one tolerance for every class: their own
-  // per-class figures have not been measured, and inventing seeds for them
-  // would dress a guess up as the spectral wand's evidence. One field each,
-  // so toggling back and forth restores what each was last set to.
-  samTolerance: SAM_TOL_DEFAULT,
-  embedTolerance: EMBED_TOL_DEFAULT,
+  // Mean-shift keeps one tolerance for every class: its own per-class figures
+  // have not been measured, and inventing seeds for it would dress a guess up
+  // as the spectral wand's evidence. A separate field, so toggling back and
+  // forth restores what each was last set to.
   msTolerance: MS_TOL_DEFAULT,
-  level: 'fine',
   budgetStep: WAND_BUDGET_MAX, // max = no budget
   sampleSize: WAND_SAMPLE_DEFAULT,
   // On by default: this dataset arrives ~75% labeled, and an unprotected fill
@@ -58,19 +51,15 @@ const INITIAL = {
   everywhere: false,
 }
 
-// The slider position for the active class, or for a non-spectral source,
-// each of which is one value for all classes.
+// The slider position for the active class, or for mean-shift, which is one
+// value for all classes.
 function sliderFor(settings, classId, seeds) {
-  if (settings.source === 'sam') return settings.samTolerance
-  if (settings.source === 'embed') return settings.embedTolerance
   if (settings.source === 'meanshift') return settings.msTolerance
   return settings.tolerances[classId] ?? seeds[classId] ?? WAND_TOL_DEFAULT
 }
 
 // Which settings field a slider move writes to.
 function toleranceField(source) {
-  if (source === 'sam') return 'samTolerance'
-  if (source === 'embed') return 'embedTolerance'
   if (source === 'meanshift') return 'msTolerance'
   return 'tolerances'
 }
@@ -146,7 +135,6 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
       const slider = sliderFor(nextSettings, t.classId, seedsRef.current)
       const selection = await select(positives, {
         source: nextSettings.source,
-        level: nextSettings.level,
         tolerance: toleranceFor(nextSettings.source, slider),
         // The budget is per sample; the backend applies it to each one
         // independently. With a single shared pot a second click halves what
@@ -238,16 +226,13 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
     if (next !== settingsRef.current.sampleSize) patch({ sampleSize: next })
   }, [patch])
 
-  // Switching source or level re-runs the clicks already placed rather than
-  // clearing them: seeing the same click measured all three ways, or at all
-  // three SAM levels, is the point of having the switch, and the backend
-  // caches every field so flipping back is free. The tolerance swaps with the
-  // source by itself now, since sliderFor reads which one is active.
+  // Switching source re-runs the clicks already placed rather than clearing
+  // them: seeing the same click measured both ways is the point of having the
+  // switch, and the backend caches every field so flipping back is free. The
+  // tolerance swaps with the source by itself now, since sliderFor reads
+  // which one is active.
   const setSource = useCallback((source) => {
     if (source !== settingsRef.current.source) patch({ source })
-  }, [patch])
-  const setLevel = useCallback((level) => {
-    if (level !== settingsRef.current.level) patch({ level })
   }, [patch])
   const setProtect = useCallback((on) => patch({ protect: !!on }), [patch])
   const setGlobal = useCallback((on) => patch({ everywhere: !!on }), [patch])
@@ -262,8 +247,8 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
   // to be recomputed when the class changes -- otherwise the preview is the one
   // the previous class's threshold produced while the slider reads the new
   // class's number, and Enter would commit a mask that matches neither.
-  // Skipped for the embedding sources: each keeps a single tolerance, so a
-  // class switch changes nothing about the selection.
+  // Skipped for mean-shift: it keeps a single tolerance, so a class switch
+  // changes nothing about the selection.
   useEffect(() => {
     if (settingsRef.current.source === 'image' && samplesRef.current.length) {
       run(settingsRef.current, samplesRef.current)
@@ -296,7 +281,6 @@ export function useWand({ active, image, tool, classes, classColors, onSelect, o
     setBudgetStep,
     setSampleSize,
     setSource,
-    setLevel,
     setProtect,
     setGlobal,
   }

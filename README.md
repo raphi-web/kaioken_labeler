@@ -32,27 +32,23 @@ onnxruntime, scipy and opencv.
 
 SAM2 click-assist needs `sam2/onnx/*.onnx`. Those graphs are **checked in and
 are the only copy**: this build has no exporter, so treat them as source, not
-as a build artifact. Without them the SAM2 button and the wand's SAM-features
-switch stay disabled; everything else still works.
+as a build artifact. Without them the SAM2 button stays disabled; everything
+else still works.
 
-The wand's third distance source, `embed`, needs `auto_encoder/embedding.onnx`
-— same policy: checked in, the only copy, source not artifact. It is an
-8-dim per-pixel land-cover embedding auto-encoder trained on this dataset's
-Sentinel-2 tiles (contract in `auto_encoder/ONNX.md`; the exporter lives in
-the training project, not here). The graph takes exactly 10 bands of raw DN,
-so on a project with any other band count the embed button stays disabled
-with the reason in its tooltip. Without the file, spectral and SAM both keep
-working exactly as before.
-
-The wand's fourth source, `mean-shift`, needs no model at all: it reduces the
-bands to 3 PCA components and runs OpenCV's `pyrMeanShiftFiltering`, which
-collapses each material onto one near-constant colour and sharpens the
-boundary between materials. The wand then measures its usual spectral RMS
-distance — but on the filtered image, so a tolerance that drifts on raw bands
-becomes a cliff here. OpenCV is already a dependency (it turns SAM masks into
-polygons), so this source is always available and its button never greys out.
-Measured on this dataset it is the strongest of the four sources (mean IoU
-0.641 vs spectral 0.617); see `implementation_log.txt`.
+The wand has two distance sources and neither needs a model file: `spectral`
+(the default, an RMS band difference over every band) and `mean-shift`, which
+reduces the bands to 3 PCA components and runs OpenCV's `pyrMeanShiftFiltering`.
+The filter collapses each material onto one near-constant colour and sharpens
+the boundary between materials, so the wand's usual spectral distance — now
+measured on the filtered image — turns a tolerance that drifts on raw bands
+into a cliff. OpenCV is already a dependency (it turns SAM masks into
+polygons), so both sources are always available. Measured on this dataset
+mean-shift is the stronger of the two (mean IoU 0.641 vs 0.617 over 385
+labeled regions); see `implementation_log.txt`. Two learned sources — a SAM2
+feature cosine and an auto-encoder land-cover embedding — were tried and
+removed after mean-shift beat both by a wide margin (0.478 / 0.476); the
+embedding model and its contract live in this repo's git history if they are
+ever wanted back.
 
 ## Projects and classes
 
@@ -88,7 +84,7 @@ stores them:
 | 1 | Agriculture-Green | | 6 | Water |
 | 2 | Raw-Earth/Agriculture | | 7 | Snow |
 | 3 | Meadow | | 8 | Wetland |
-| 4 | Forest | | 9 | Synthetic Nodata |
+| 4 | Forest | | 8 | Wetland |
 
 Pick a class from the palette left of the labeling pane, or with `1`–`9`, `0`,
 `-`; `E` toggles the eraser. Past eleven classes the extra ones are click-only —

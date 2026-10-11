@@ -33,10 +33,6 @@ export default function App() {
   const [menu, setMenu] = useState(null) // {name, x, y} while a thumbnail menu is open
   const [menuError, setMenuError] = useState('')
   const [samAvailable, setSamAvailable] = useState(false) // Efficient-SAM2 files present
-  // Whether the auto-encoder wand source can run: the model is global, but the
-  // 10-band gate depends on the open project -- so this refetches on every
-  // project change rather than once at mount.
-  const [embedAvailable, setEmbedAvailable] = useState(false)
   // Transient status messages ("Labels cleared", "Project opened", etc.) shown
   // as a fading toast at the bottom-center of the window. Single-message at a
   // time: a new showToast replaces the previous, which keeps the UI honest
@@ -175,12 +171,6 @@ export default function App() {
     api('get_image').then(applyImagePayload)
     api('sam_available').then((r) => setSamAvailable(!!r.available))
   }, [])
-
-  // The embed gate depends on the open project's band count, so it is
-  // re-checked whenever the project changes (open, create, reopen-on-paths).
-  useEffect(() => {
-    api('embed_available').then((r) => setEmbedAvailable(!!r.available))
-  }, [project?.root])
 
   // Poll thumbnail generation while it runs; thumbnails appear as they finish.
   useEffect(() => {
@@ -623,8 +613,6 @@ export default function App() {
           lockedClasses={lockedClasses}
           hiddenClasses={hiddenClasses}
           fitRef={fitRef}
-          samAvailable={samAvailable}
-          embedAvailable={embedAvailable}
         />
       </div>
       <ThumbnailStrip

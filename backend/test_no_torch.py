@@ -23,7 +23,7 @@ BANNED = ("torch", "torchvision", "segmentation_models_pytorch", "timm",
 
 
 def test_backend_modules_import_without_torch():
-    for name in ("data", "project", "sam_service", "embed_service", "meanshift", "api"):
+    for name in ("data", "project", "sam_service", "meanshift", "api"):
         importlib.import_module(name)
     for name in BANNED:
         if name in __import__("sys").modules:

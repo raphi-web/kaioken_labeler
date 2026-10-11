@@ -156,28 +156,18 @@
            lastCall('wand_select')?.args[1].tolerance === 60 / 200,
            String(lastCall('wand_select')?.args[1].tolerance))
 
-        // --- SAM features switches source and tolerance units ---
-        const samToggle = [...controls.querySelectorAll('.wand-toggle')]
-          .find((l) => l.textContent.includes('SAM features'))
-          .querySelector('input')
-        samToggle.click()
+        // --- mean-shift switches source and tolerance units ---
+        byText('.wand-levels .segmented button', 'mean-shift').click()
         await sleep(250)
         const o2 = lastCall('wand_select')?.args[1] ?? {}
-        ok('SAM source selected', o2.source === 'sam', String(o2.source))
-        ok('SAM tolerance mapping (50 -> 0.8)', Math.abs(o2.tolerance - 0.8) < 1e-9,
-           String(o2.tolerance))
-        ok('level defaults to fine', o2.level === 'fine', String(o2.level))
-        await sleep(50)
-        ok('level picker appears', !!document.querySelector('.wand-levels'))
+        ok('mean-shift source selected', o2.source === 'meanshift', String(o2.source))
+        ok('mean-shift tolerance mapping (50 -> 0.08)',
+           Math.abs(o2.tolerance - 0.08) < 1e-9, String(o2.tolerance))
+        ok('no level knob travels any more', o2.level === undefined, String(o2.level))
 
-        // --- switching level re-runs, keeping the samples ---
-        byText('.wand-levels .segmented button', 'deep').click()
-        await sleep(250)
-        ok('level switch re-runs', lastCall('wand_select')?.args[1].level === 'deep',
-           String(lastCall('wand_select')?.args[1].level))
-
-        // back to spectral: the per-class tolerance must come back, not 60/200 * sam
-        samToggle.click()
+        // back to spectral: the per-class tolerance must come back, not the
+        // mean-shift one
+        byText('.wand-levels .segmented button', 'spectral').click()
         await sleep(250)
         ok('spectral tolerance restored on switch back',
            lastCall('wand_select')?.args[1].tolerance === 60 / 200,
@@ -187,7 +177,7 @@
         window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true }))
         await sleep(300)
         ok('class switch re-runs with that class seed',
-           lastCall('wand_select')?.args[1].tolerance === 24 / 200,  // Road -> 24
+           lastCall('wand_select')?.args[1].tolerance === 18 / 200,  // Agri-Green -> 18
            String(lastCall('wand_select')?.args[1].tolerance))
         // ...and the class we edited keeps its own value when we come back
         window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }))

@@ -1,15 +1,14 @@
 """Measure the wand against the project's own labels.
 
     python3 backend/bench_wand.py tolerance   # per-class tolerance sweep
-    python3 backend/bench_wand.py sources     # spectral vs SAM2 features
+    python3 backend/bench_wand.py sources     # spectral vs mean-shift
 
 Both take connected regions of the saved user masks as ground truth, click the
 most interior pixel of each, and score the selection by IoU against that
 region. That is the method every default in LabelerPane's wand constants came
 from, and this is the script they came from -- kept so the numbers can be
-re-derived rather than trusted, and so the open question can be answered: the
-SAM-features source is expected to do better on higher-resolution imagery than
-on 10 m/px Sentinel-2, and `sources` is how you would find out.
+re-derived rather than trusted, and re-run after a dataset swap or a
+re-exported encoder.
 
 Runs against a throwaway copy of the project. Nothing here writes to
 label_raster/.
@@ -32,8 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data import UNLABELED  # noqa: E402
 
-# "Synthetic Nodata" is a bookkeeping class, not a material anyone wands at.
-NODATA_CLASS_NAME = "synthetic nodata"
+# "Synthetic Nodata" was a bookkeeping class, not a material anyone wands at;
+# it was dropped from the taxonomy. The name only survived in this module's
+# docstring because it was a common constant — the skip logic still works
+# for a class of that name, if it ever returns.
 
 
 def scratch_project(n_images):
@@ -128,14 +129,13 @@ def collect(api, args, sweep):
     """
     rows = []
     names = {c["id"]: c["name"] for c in api._project.config["classes"]}
-    skip = {i for i, n in names.items() if n.strip().lower() == NODATA_CLASS_NAME}
     for name in api._project.list_images()[:args.images]:
         api.load_image(name)
         labels = api._labels
         if labels is None:
             continue
         height, width = labels.shape
-        found = regions(labels, skip, args.min_region, args.regions)
+        found = regions(labels, set(), args.min_region, args.regions)
         for truth, cls, x, y, size in found:
             scores = {}
             for label, options in sweep:
@@ -244,20 +244,12 @@ def main():
             rows, names = collect(api, args, sweep)
             report_tolerance(rows, names, tols)
         else:
-            if api._sam.unavailable_reason():
-                raise SystemExit(f"SAM2 unavailable: {api._sam.unavailable_reason()}")
-            if api._embed_unavailable():
-                raise SystemExit(f"embed unavailable: {api._embed_unavailable()}")
             # (name, [(score label, tolerance), ...], options template). The
-            # three arms sweep disjoint tolerance ranges because the three
+            # two arms sweep disjoint tolerance ranges because the two
             # distance units have nothing to do with each other.
             arms = {
                 "spectral": ([round(0.05 + 0.05 * i, 3) for i in range(9)],
                              {"sample_size": 9}),
-                "sam": ([round(0.5 + 0.05 * i, 3) for i in range(11)],
-                        {"sample_size": 9, "source": "sam", "level": "fine"}),
-                "embed": ([round(0.02 + 0.02 * i, 3) for i in range(20)],
-                          {"sample_size": 9, "source": "embed"}),
                 # Mean-shift shares the spectral units but on a much sharper
                 # field (intra/inter 0.27 vs 0.64), so its band sits well
                 # below the spectral one; sweep 0.01..0.30 finely.

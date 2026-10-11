@@ -11,11 +11,11 @@ rasterio>=1.4,<1.5
 pywebview>=6
 pillow>=10
 
-# SAM2 "snap-to-edge" click assist, and the wand's "embed" source (the
-# auto-encoder graph in auto_encoder/). The encoder/decoder graphs are
-# prebuilt in sam2/onnx/; scipy does the bilinear resizes around them (the
-# job torchvision and torch.nn.functional.interpolate used to do) and
-# opencv turns the resulting mask into editable polygons.
+# SAM2 "snap-to-edge" click assist. The encoder/decoder graphs are prebuilt
+# in sam2/onnx/; scipy does the bilinear resizes around them (the job
+# torchvision and torch.nn.functional.interpolate used to do), and opencv
+# turns the resulting mask into editable polygons and runs the wand's
+# mean-shift source (pyrMeanShiftFiltering).
 onnxruntime>=1.20
 scipy>=1.10
 opencv-python-headless>=4.8

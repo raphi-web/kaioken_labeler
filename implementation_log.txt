@@ -59,7 +59,33 @@ Design notes:
   >10%, or the filter has become decoration.
 - Default-band pin: 006.tif interior click selects 8.98% at tol 0.08.
 
-## 2026-10-09 — Road class removed; dataset swapped to 138 tiles
+## 2026-10-09 — SAM and embed sources removed from the wand; dataset resized
+
+The SAM-features and auto-encoder embedding sources were removed from the magic
+wand in favor of mean-shift, which beat both on IoU (0.641 vs 0.478/0.476 over
+385 regions). The SAM2 snap-to-edge tool remains; only the wand's distance-field
+use of SAM2 features was removed, along with the `level` option (a SAM-only knob).
+
+Removed:
+- `wand.py`: `features()`, `_embedding_field()`, `_cosine_field()`, `embed_features()`,
+  `_feature_sample()`, the `level` field from `WandOptions`, the `resize_bilinear` import
+- `api.py`: `EmbedService` integration, `_embed_unavailable()`, `embed_available()`,
+  the `_display_bands` parameter path in `Wand.set_image` (neither source uses it),
+  the SAM/embed availability gates in `wand_select`
+- `sam_service.py`: `FEATURE_LEVELS` and `feature_stack()` — used only by the wand
+- `embed_service.py`, `test_embed.py`, `auto_encoder/` — the model and its wrapper
+  (recoverable from git history and the training project)
+- all four-source code in `bench_wand.py` → two-source (spectral vs mean-shift)
+- frontend: SAM/embed source buttons, level picker, `WandControls` props
+  (`samAvailable`, `embedAvailable`), `EmbedService` availability gating
+
+Additionally, the underlying dataset was swapped from 34 tiles to 138 tiles of
+the full eonavi project, and Road was dropped from the class taxonomy with
+everything above id 1 shifted down by one. Test fixtures that pinned old
+filenames (00.tiff, 14.tiff, label_raster/00.tif) were repointed or replaced
+by dataset-resilient helpers.
+
+## 2026-10-09 — Synthetic Nodata removed from the taxonomy
 
 The training-side taxonomy dropped Road (old id 1) and shifted every id above
 it down by one: Agriculture-Green 2→1, Raw-Earth 3→2, Meadow 4→3, Forest 5→4,

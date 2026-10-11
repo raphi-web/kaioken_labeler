@@ -46,7 +46,6 @@ function respond(method, args) {
       return { name: 't.tif', png: '', width: W, height: H,
                labels: toBase64(seeded()), labeled_pixels: PAINTED }
     case 'sam_available': return { available: false }
-    case 'embed_available': return { available: false }
     case 'set_labels': {
       const buffer = fromBase64(args[0])
       pushed.push(buffer)

@@ -84,7 +84,6 @@ function makeCrosshairCursor(color) {
 export default function LabelerPane({
   image, labels, labelsVersion, tool, view, setView, onStrokeEnd, onDiff,
   onSamSnap, onWandSelect, classColors, classes, lockedClasses, hiddenClasses, fitRef,
-  samAvailable, embedAvailable,
 }) {
   const canvasRef = useRef(null)
   const [canvasReady, setCanvasReady] = useState(false)
@@ -593,10 +592,7 @@ export default function LabelerPane({
           />
         </label>
       </div>
-      {wandMode && (
-        <WandControls wand={wand} samAvailable={samAvailable}
-          embedAvailable={embedAvailable} />
-      )}
+      {wandMode && <WandControls wand={wand} />}
       <Viewport image={image} view={view} setView={setView} fitRef={fitRef}>
         <img src={`data:image/png;base64,${image?.png}`} alt="" draggable={false} />
         <canvas

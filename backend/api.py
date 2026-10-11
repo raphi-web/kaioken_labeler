@@ -20,7 +20,6 @@ import webview
 
 from data import (UNLABELED, SentinelImage, array_to_png_b64, read_label_mask,
                   tile_geotiff, write_label_mask)
-from embed_service import INPUT_BANDS, EmbedService
 from project import (CLASS_PRESETS, DEFAULT_PRESET, Project,
                      config_from_settings, config_path, default_config,
                      probe_band_count, save_config)
@@ -51,10 +50,10 @@ class Api:
         self._dirty_geo = {}     # name -> (crs, transform) for each dirty entry above
         self._lock = threading.Lock()
         self._sam = SamService()  # Efficient-SAM2 click assist (onnxruntime)
-        self._embed = EmbedService()  # auto-encoder land-cover embeddings
-        # The wand keeps its own caches, keyed on the image (see Wand.set_image),
-        # and shares the encoders with the snap tool through these services.
-        self._wand = Wand(self._sam, self._embed)
+        # The wand keeps its own caches, keyed on the image (see Wand.set_image).
+        # It no longer shares anything with the snap tool: both of its sources
+        # (spectral, mean-shift) read the raster's own bands.
+        self._wand = Wand()
         # Background GeoTIFF tiling (see create_project_from_geotiff)
         self._tiling = {"running": False, "done": 0, "total": 0,
                         "result": None, "error": None}
@@ -147,16 +146,9 @@ class Api:
             options = parse_options(options)
             # Cheap when the key is unchanged, which is what lets this be
             # unconditional: there is no invalidation hook here to forget.
-            self._wand.set_image(self._image, self._sam_image_key(),
-                                 self._display_bands())
-            if options.source == "sam":
-                reason = self._sam.unavailable_reason()
-                if reason is not None:
-                    raise WandError(reason)
-            elif options.source == "embed":
-                reason = self._embed_unavailable()
-                if reason is not None:
-                    raise WandError(reason)
+            # The wand's key omits the display bands (both sources read every
+            # band); the snap tool's key below keeps them.
+            self._wand.set_image(self._image, self._wand_image_key())
             result = self._wand.select(samples, options, self._labels)
         except WandError as e:
             return {"ok": False, "error": str(e)}
@@ -180,24 +172,14 @@ class Api:
         reason = self._sam.unavailable_reason()
         return {"available": reason is None, "reason": reason}
 
-    def _embed_unavailable(self):
-        """Why source='embed' cannot run right now, or None if it can.
+    def _wand_image_key(self):
+        """Cache key for the wand: anything that changes the raster's bands.
 
-        The graph is fixed at 10 input bands; a project tiled from another
-        sensor gets a clear refusal instead of a shape error from ORT.
+        Deliberately NOT the display bands -- both wand sources read every
+        band, so re-keying on a display change would throw away valid caches.
         """
-        reason = self._embed.unavailable_reason()
-        if reason is not None:
-            return reason
-        if self._image is not None and self._image.bands != INPUT_BANDS:
-            return (f"The embedding encoder needs a {INPUT_BANDS}-band stack; "
-                    f"this image has {self._image.bands}")
-        return None
-
-    def embed_available(self):
-        """Whether the embedding wand source can run (model present, 10 bands)."""
-        reason = self._embed_unavailable()
-        return {"available": reason is None, "reason": reason}
+        root = self._project.root if self._project is not None else None
+        return (root, self._image_name)
 
     def _sam_image_key(self):
         """Cache key for the SAM embeddings: anything that changes the RGB pixels."""
@@ -637,9 +619,10 @@ class Api:
             # so the frontend swaps only the base png) and rebuild every cached
             # thumbnail, overwriting the old ones.
             #
-            # The wand needs no hand-invalidation here: its cache key is
-            # _sam_image_key(), which carries the display bands, so the next
-            # request rebuilds by itself.
+            # The wand needs no hand-invalidation here: both of its sources read
+            # every band of the raster, not the display composite, so a display
+            # change leaves its cached fields correct. Its key (_wand_image_key)
+            # deliberately omits the display bands for exactly that reason.
             if self._image is not None:
                 result["image"] = self._image_payload()
             self._project.start_thumbnail_generation(force=True)

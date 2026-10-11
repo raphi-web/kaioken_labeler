@@ -49,7 +49,6 @@ CLASS_PRESETS = {
         {"id": 6, "name": "Water", "color": "#2f7ce0"},
         {"id": 7, "name": "Snow", "color": "#eef2f7"},
         {"id": 8, "name": "Wetland", "color": "#9b5fd0"},
-        {"id": 9, "name": "Synthetic Nodata", "color": "#ff2fd0"},
     ],
     "binary": [
         {"id": 0, "name": "Target", "color": "#ff5028"},
