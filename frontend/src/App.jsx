@@ -33,6 +33,10 @@ export default function App() {
   const [menu, setMenu] = useState(null) // {name, x, y} while a thumbnail menu is open
   const [menuError, setMenuError] = useState('')
   const [samAvailable, setSamAvailable] = useState(false) // Efficient-SAM2 files present
+  // WorldCover land-cover overlay, on top of image AND labels. Session-only
+  // like the other view settings; the layer itself only exists for images
+  // whose payload carried a worldcover_png (see backend/api._image_payload).
+  const [showWorldcover, setShowWorldcover] = useState(false)
   // Transient status messages ("Labels cleared", "Project opened", etc.) shown
   // as a fading toast at the bottom-center of the window. Single-message at a
   // time: a new showToast replaces the previous, which keeps the UI honest
@@ -155,7 +159,8 @@ export default function App() {
     labelsRef.current = img.labels
       ? fromBase64(img.labels)
       : new Uint8Array(img.width * img.height).fill(UNLABELED)
-    setImage({ png: img.png, width: img.width, height: img.height, name: img.name })
+    setImage({ png: img.png, width: img.width, height: img.height, name: img.name,
+               worldcoverPng: img.worldcover_png ?? null })
     imageNameRef.current = img.name
     setLabeledPixels(img.labeled_pixels ?? 0)
     undoStack.current = []
@@ -583,6 +588,9 @@ export default function App() {
         onSaveUserMask={async () => { await pushLabels(); await handleExport('save_user_mask') }}
         onOpenSettings={handleOpenSettings}
         samAvailable={samAvailable}
+        showWorldcover={showWorldcover}
+        setShowWorldcover={setShowWorldcover}
+        hasWorldcover={!!image?.worldcoverPng}
       />
       <div className="panes">
         <ClassPalette
@@ -613,6 +621,7 @@ export default function App() {
           lockedClasses={lockedClasses}
           hiddenClasses={hiddenClasses}
           fitRef={fitRef}
+          showWorldcover={showWorldcover}
         />
       </div>
       <ThumbnailStrip

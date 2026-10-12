@@ -6,6 +6,7 @@ export default function Toolbar({
   onUndo, onRedo, onFit, onClearLabels,
   hasProject, onNewProject, onNewFromGeotiff, onAddImage,
   onSaveProject, onSaveUserMask, onOpenSettings, samAvailable,
+  showWorldcover, setShowWorldcover, hasWorldcover,
 }) {
   // Shared by the slider, the numeric box and the wheel, so all three clamp
   // identically. clampBrush returns null for a blank or non-numeric entry,
@@ -140,6 +141,23 @@ export default function Toolbar({
           title={`Brush width in pixels (${BRUSH_MIN}-${BRUSH_MAX})`}
         />
         <span className="hint">px</span>
+        {/* The WorldCover overlay sits to the right of the brush size, as a
+            checkbox in its own right: it is a view toggle, but it modifies
+            what the brush paints over, so it belongs with the brush. */}
+        <label
+          className="worldcover-toggle"
+          title={hasWorldcover
+            ? 'Overlay the ESA WorldCover 2021 land cover map (worldcover/ folder) over the image and the labels'
+            : 'No worldcover/ overlay found for this image'}
+        >
+          <input
+            type="checkbox"
+            checked={showWorldcover}
+            disabled={!hasWorldcover}
+            onChange={(e) => setShowWorldcover(e.target.checked)}
+          />
+          Show Worldcover
+        </label>
       </div>
 
       {/* Labels autosave a second after the last stroke, so this doubles as the

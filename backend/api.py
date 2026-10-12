@@ -25,6 +25,7 @@ from project import (CLASS_PRESETS, DEFAULT_PRESET, Project,
                      probe_band_count, save_config)
 from sam_service import SamService, mask_to_polygons
 from wand import Wand, WandError, parse_options
+from worldcover import worldcover_overlay_b64, worldcover_path
 
 
 def _class_defaults(config):
@@ -91,7 +92,7 @@ class Api:
         """Everything the frontend needs to display the active image, or None."""
         if self._image is None:
             return None
-        return {
+        payload = {
             "name": self._image_name,
             "png": array_to_png_b64(self._image.rgb_composite(self._display_bands())),
             "width": self._image.width,
@@ -99,6 +100,17 @@ class Api:
             "labels": base64.b64encode(self._labels.tobytes()).decode("ascii"),
             "labeled_pixels": int((self._labels != UNLABELED).sum()),
         }
+        # The WorldCover overlay only travels when the project has one for
+        # this image: ~350 KB of RGBA per payload otherwise, most of the time
+        # to be ignored by an unchecked box. The frontend keys the checkbox
+        # off the key's presence, so a project without the folder never
+        # offers it. Rendered once per image switch, not per checkbox toggle.
+        if self._project is not None:
+            overlay = worldcover_overlay_b64(
+                worldcover_path(self._project.root, self._image_name))
+            if overlay is not None:
+                payload["worldcover_png"] = overlay
+        return payload
 
     # ---------- image / overlay ----------
 

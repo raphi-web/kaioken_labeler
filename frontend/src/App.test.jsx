@@ -371,3 +371,55 @@ describe('add image to project', () => {
     await waitFor(() => expect(screen.getByText('no good')).toBeTruthy())
   })
 })
+
+describe('worldcover overlay toggle', () => {
+  const checkbox = () => screen.getByRole('checkbox', { name: /Show Worldcover/i })
+  const overlay = () => document.querySelector('img.worldcover-overlay')
+
+  /** Mount with get_image carrying a (tiny) worldcover_png in the payload.
+      A full mockImplementation, not Once: mount() calls get_project before
+      get_image, so a once-mock would be consumed by the wrong call. */
+  async function mountWithWorldcover() {
+    api.mockImplementation(async (method, ...args) => {
+      if (method === 'get_image') {
+        return { name: 't.tif', png: '', width: W, height: H,
+                 labels: toBase64(seeded()), labeled_pixels: PAINTED,
+                 worldcover_png: 'AAAA' }
+      }
+      return respond(method, args)
+    })
+    return mount()
+  }
+
+  it('is disabled when the payload has no worldcover layer', async () => {
+    await mount()
+    expect(checkbox().disabled).toBe(true)
+    fireEvent.click(checkbox())
+    expect(checkbox().checked).toBe(false)
+    expect(overlay()).toBeNull()
+  })
+
+  it('toggles the overlay image on and off', async () => {
+    await mountWithWorldcover()
+    expect(checkbox().disabled).toBe(false)
+    expect(overlay()).toBeNull()
+
+    fireEvent.click(checkbox())
+    await waitFor(() => expect(overlay()).toBeTruthy())
+    expect(overlay().src).toContain('base64,AAAA')
+
+    fireEvent.click(checkbox())
+    await waitFor(() => expect(overlay()).toBeNull())
+  })
+
+  it('sits after the brush size in the toolbar', async () => {
+    await mountWithWorldcover()
+    const brushBox = document.querySelector('input.brush-size')
+    const toggle = document.querySelector('.worldcover-toggle')
+    expect(brushBox && toggle).toBeTruthy()
+    // Same toolbar group, and the toggle comes after the numeric box.
+    expect(toggle.closest('.toolbar-group')).toBe(brushBox.closest('.toolbar-group'))
+    expect(brushBox.compareDocumentPosition(toggle)
+      & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})

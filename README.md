@@ -105,11 +105,23 @@ pixel count in the toolbar doubles as the "your work is on disk" readout.
 `input_images/` and `label_raster/` are gitignored (~140 MB) and the app edits
 the labels **in place**, so back them up outside version control.
 
+An optional `worldcover/` folder (also gitignored) holds one ESA WorldCover
+2021 (v200, 10 m) land-cover raster per image — same basename, same pixel
+grid, uint8 legend values with nodata 0. Images with a matching overlay get
+the **Show Worldcover** checkbox in the toolbar (right of the brush size);
+images without one leave it disabled.
+
 ## The tools
 
 **Brush** and **Polygon** are what they sound like; the brush width is on the
 toolbar and also on the scroll wheel. It is a diameter in image pixels, so 1
 paints a single pixel.
+
+**Show Worldcover** (checkbox right of the brush size) overlays the ESA
+WorldCover land-cover map on top of the image *and* the painted labels,
+colourised with the official ESA legend at a fixed translucency so both stay
+readable. It is a pure view aid — click-through, nothing is written — and the
+layer is only offered for images that have a `worldcover/` raster.
 
 **Wand** clicks a region and selects pixels of similar material around it,
 previewed until `Enter` paints it (`Esc` discards, `Backspace` drops the last

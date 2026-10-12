@@ -3,6 +3,51 @@
 Rationale and measurements that do not belong in source comments. Newest
 entry first.
 
+## 2026-10-12 — WorldCover v200 overlay: dataset build + Show Worldcover toggle
+
+Dataset. worldcover/ holds one raster per input image (167/167), built from
+the ESA WorldCover 2021 v200 3x3-deg COG tiles. No download was needed: all
+50 tiles the input images touch (computed via transform_bounds -> 3-deg grid)
+were already in the SSD cache at
+~/SSD-KHADAS/Training-Data/Datasets/Eigendaten/worldcover/cache. Each output
+is reprojected (rasterio.reproject, nearest — categorical data) onto the
+input image's OWN grid (same CRS/transform/shape), uint8, nodata 0, deflate;
+images touching two tiles merge with first-wins over zeros. Verified: grid
+identity vs input, values subset of the legend, zero nodata pixels anywhere,
+class histograms match the SSD folder's independent clips (median max-delta
+0.0015; the ~0.08-0.10 outliers are exactly the images whose clip in the old
+experiment crossed a tile seam). 2.4 MB total.
+
+Backend. worldcover.py: legend (official ESA v200 colours), alpha 140/255
+baked into the RGBA PNG. api._image_payload adds worldcover_png only when the
+project has a matching file — recomputed per call, no cache (a 512^2 PNG is
+~150 KB b64, and image switches are rare; a cache would need invalidation
+for a folder users edit by hand). Missing/corrupt/2-band -> key absent ->
+checkbox disabled, never an error.
+
+Frontend. Toolbar: checkbox in the Brush group right of the size box (it
+changes what you paint OVER, so it lives with the brush, not with View).
+LabelerPane: an <img> in the canvas stack AFTER the label canvas (so it
+covers image AND labels per the requirement) and before the wand/region
+preview canvases (selection hints stay readable); pointer-events:none makes
+it click-through. App holds showWorldcover as session-only view state.
+
+Tests. backend/test_worldcover.py (legend mapping, nodata transparency,
+payload contract, plus a real-dataset invariant: every input image has a
+grid-matching overlay; skips without the data folders). App.test.jsx:
+disabled-without-layer, toggle mounts/unmounts, position after brush size.
+smoke.html: real-DOM checks incl. paint-through-the-overlay and stack order;
+its 4 pre-existing FAILs (palette count 12 vs "11", wand toggles, hide-class
+overlay) reproduce on the stashed tree — stale smoke assertions from the
+taxonomy change, not regressions.
+
+Known pre-existing failure, NOT from this change:
+test_wand.py::test_the_default_meanshift_tolerance_selects_a_region_and_not_the_scene[006.tif]
+fails identically with these changes stashed. The test pins the mean-shift
+tolerance band on a specific tile; per the dataset-swap rule in the skill,
+the constants were measured on an earlier dataset generation — needs a
+re-bench, separate task.
+
 ## 2026-10-09 — mean-shift as the wand's fourth source (Senpai's idea)
 
 PCA(3 bands) -> uint8 -> cv2.pyrMeanShiftFiltering(sp=7, sr=25,

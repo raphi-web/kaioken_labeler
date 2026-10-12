@@ -252,6 +252,31 @@ body {
   width: 52px;
 }
 
+/* The WorldCover checkbox rides along in the Brush group (right of the brush
+   size). Same muted colour as the pane hints so it reads as a view aid, not
+   a primary tool. */
+.worldcover-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.worldcover-toggle input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.worldcover-toggle:has(input:disabled) {
+  color: var(--text-mute);
+  cursor: default;
+}
+
 .toolbar input[type='range'] {
   width: 110px;
   accent-color: var(--accent);
@@ -607,6 +632,13 @@ body {
 .canvas-stack canvas {
   cursor: crosshair;
   touch-action: none;
+}
+
+/* The ESA WorldCover layer: painted over the base image and the labels (DOM
+   order puts it above both), click-through so it never eats a stroke, and it
+   stays under the wand/region preview canvases which follow it in the stack. */
+.canvas-stack img.worldcover-overlay {
+  pointer-events: none;
 }
 
 .brush-cursor {

@@ -84,6 +84,7 @@ function makeCrosshairCursor(color) {
 export default function LabelerPane({
   image, labels, labelsVersion, tool, view, setView, onStrokeEnd, onDiff,
   onSamSnap, onWandSelect, classColors, classes, lockedClasses, hiddenClasses, fitRef,
+  showWorldcover,
 }) {
   const canvasRef = useRef(null)
   const [canvasReady, setCanvasReady] = useState(false)
@@ -611,6 +612,18 @@ export default function LabelerPane({
           // context menu must not open on it.
           onContextMenu={samMode || wandMode ? (e) => e.preventDefault() : undefined}
         />
+        {showWorldcover && image?.worldcoverPng && (
+          // The colourised ESA WorldCover layer, over the image AND the label
+          // canvas. Pure view aid: click-through (pointer-events: none) and
+          // translucent (alpha baked into the PNG by the backend), so the
+          // labels underneath stay readable while painting over the overlay.
+          <img
+            className="worldcover-overlay"
+            src={`data:image/png;base64,${image.worldcoverPng}`}
+            alt=""
+            draggable={false}
+          />
+        )}
         {wandMode && (
           <canvas
             ref={wand.canvasRef}
